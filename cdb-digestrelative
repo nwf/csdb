@@ -1,0 +1,39 @@
+#!/usr/bin/env lua5.3
+
+-- Read a stream of GNU digest filenames and concat them together, adjusting
+-- paths by prefixing the relative path of each digest file.
+
+local argparse  = require "argparse"
+local plpath    = require "pl.path"
+
+local cdblib    = require "cdblib"
+
+local argp = argparse("digestmangle", "GNU digest stream mangling tool")
+argp:flag("--nul -0")
+    :description("NUL-terminate lines rather than newline")
+    :default(false)
+argp:flag("--inul -1")
+    :description("Input is NUL terminated rather than newline")
+    :default(false)
+argp:flag("--fnul -2")
+    :description("Input files are NUL terminated rather than newline")
+    :default(false)
+
+local args = argp:parse()
+
+local render = cdblib.renderers_for(args.nul, false)
+
+local function mklineiter(f)
+  return cdblib.iter_gnu_digest(cdblib.iter_lines_or_nul(args.fnul, f))
+end
+
+for fileline in cdblib.iter_lines_or_nul(args.inul)() do
+  local prefix = plpath.dirname(fileline)
+
+  local f = io.open(fileline, "r")
+  for h, p in mklineiter(f)() do
+    local np = plpath.normpath(plpath.join(prefix, p))
+    io.write(render(h, np))
+  end
+  io.close(f)
+end
