@@ -2,6 +2,8 @@ local plstringx = require "pl.stringx"
 
 local _M = {}
 
+------------------------------------------------ GNU digest tools {{{
+
 -- Escape file name for GNU digest; returns new form and number, which is 0 if
 -- string is unaltered and positive if escaping was necessary.
 --
@@ -24,13 +26,16 @@ local function unescape_gnu_digest(fn)
 end
 _M.unescape_gnu_digest = unescape_gnu_digest
 
-function _M.iter_gnu_digest(baseiter)
+-- Iterate a GNU digest tool stream, canonicalizing file names into their
+-- unescaped form if necessary.  `errcb` is invoked for lines that do not match
+-- and may return `false` to stop iteration.
+function _M.iter_gnu_digest(errcb, baseiter)
   return function() return coroutine.wrap(function()
     for line in baseiter() do
       if line == nil then return nil end
       local esc, h, fn = line:match("^(\\?)(%x*) [ *](.*)$")
       if esc == nil then
-        print("Bad line:", line) -- XXX
+        if errcb(line) == false then return nil end
       else
         coroutine.yield(h, (esc == "") and fn or unescape_gnu_digest(fn))
       end
@@ -38,18 +43,21 @@ function _M.iter_gnu_digest(baseiter)
   end) end
 end
 
-function _M.iter_just_paths_as_digest(baseiter)
+function _M.iter_just_paths_as_digest(dummyhash, baseiter)
   return function() return coroutine.wrap(function()
     for line in baseiter() do
       if line == nil then return nil end
-      coroutine.yield("-", line)
+      coroutine.yield(dummyhash, line)
     end
   end) end
 end
 
+----------------------------------------------------------------- }}}
+---------------------------------------------- Iterator utilities {{{
+
 -- a custom delimited string iterator, useful for nul-separated records, e.g.
 -- :: (string, () -> () -!> string) -> () -> () -!> string
-function _M.mk_delim_iter(delim, baseiter)
+function _M.iter_delim(delim, baseiter)
   local ix = 0
   local s = { fin = {}, incomplete = {} }
 
@@ -80,11 +88,21 @@ function _M.mk_delim_iter(delim, baseiter)
   return function() return coroutine.wrap(function()
     for chunk in baseiter() do
       proc(chunk)
-      
+
       -- while we have a complete delimited string, return one
-      while #s.fin > 0 do
-        ix = ix + 1
-        coroutine.yield(ix, table.remove(s.fin))
+      if #s.fin > 0 then
+        local t = s.fin
+        s.fin = {}
+
+        -- reverse once, then drain from the "front"
+        do
+          local i, n = 1, #t
+          while i < n do t[i], t[n] = t[n], t[i]; i = i+1; n = n-1 end
+        end
+        while #t > 0 do
+          ix = ix + 1
+          coroutine.yield(ix, table.remove(t))
+        end
       end
     end
   end) end
@@ -97,39 +115,100 @@ function _M.iter_just_2nd(baseiter)
 end
 
 -- :: (file or nil) -> () -> () -!> string
-function _M.mk_read_iter(f)
+function _M.iter_read(f)
   f = f or io.input()
   return function() return function() return f:read(1024) end end
 end
-function _M.mk_lines_iter(f)
+function _M.iter_lines(f)
   return function() return (f or io.input()):lines() end
 end
 
 -- Iterate stdin as either newline-terminated or NUL-terminated records
--- :: (boolean, file or nil) -> () -!> string
+-- :: (boolean, file or nil) -> () -> () -!> string
 function _M.iter_lines_or_nul(nul, f)
   assert(type(nul) == "boolean")
-  return nul and _M.iter_just_2nd(_M.mk_delim_iter("\0", _M.mk_read_iter(f)))
-              or _M.mk_lines_iter(f)
+  return nul and _M.iter_just_2nd(_M.iter_delim("\0", _M.iter_read(f)))
+              or _M.iter_lines(f)
 end
 
-function _M.renderers_for(nul, unescape)
-  assert(type(nul) == "boolean")
-  assert(type(unescape) == "boolean")
-  local fin = nul and '\0' or '\n'
-  local mangle_path = unescape
-                      and function(p) return p, fin end
-                      or function(p)
-                           local np, nesc = escape_gnu_digest(p)
-                           return (nesc == 0 and "" or "\\"), "  ", np, fin
-                         end
-  local mangle_full = unescape
-                      and function(h, f) return "", h, "  ", f, fin end
-                      or function(h, f)
-                           local nf, nesc = escape_gnu_digest(f)
-                           return (nesc == 0 and "" or "\\"), h, "  ", nf, fin
-                         end
-  return mangle_full, mangle_path
+function _M.iter_table(t)
+  return function() return coroutine.wrap(function()
+    for _, v in ipairs(t) do coroutine.yield(v) end
+  end) end
 end
+
+----------------------------------------------------------------- }}}
+--------------------------------------------- Generator utilities {{{
+
+-- lazily generate and cache escaped version
+local function _renderer_for_esc(t,k)
+    local nesc
+    t.f, nesc = escape_gnu_digest(t.u)
+    t.e = nesc == 0 and "" or "\\"
+    return t[k]
+  end
+
+-- Generate a renderer for a choice of common parameters.  In the resulting
+-- template expansion,
+--
+--   $e expands to "\\" (resp. "") if the path was (resp. was not) escaped
+--   $f expands to the optionally escaped file name (see $e)
+--   $h expands to the hash
+--   $u expands to the unescaped file name
+--   $z expands to the appropriate record separator ("\n" or "\0")
+--
+function _M.renderer_for(nul, unescape, template)
+  local v = { z = nul and "\0" or "\n"
+            , f = unescape and function(t) return t.u end or _renderer_for_esc
+            , e = unescape and "" or _renderer_for_esc
+            }
+  local mt = { __index =
+    function(t,k)
+      local x = v[k]
+      return type(x) == "function" and x(t,k) or x
+    end
+  }
+  return function(hash, path)
+    return template:substitute(setmetatable({h = hash, u = path}, mt))
+  end
+end
+
+----------------------------------------------------------------- }}}
+------------------------------------------- Path escape utilities {{{
+
+function _M.posix_shell_escape(str)
+  return "'" .. str:gsub("'", "'\"'\"'") .. "'"
+end
+
+-- While POSIX shells understand control characters inside single quotes, they
+-- are unfriendly to read as such.  Some shells have a $'...' escape that can
+-- process things like \t and \xXX.  This uses that instead.  Perhaps we should
+-- have a version that actually uses \t, but, honestly, if you're hitting this
+-- case you deserve what you get.
+local function extended_shell_escape(str)
+  return "'" ..
+    str:gsub("['%c]", function(c)
+      return c == "'" and "'\"'\"'" or ("'$'\\x%02x''"):format(c:byte())
+    end) .. "'"
+end
+_M.extended_shell_escape = extended_shell_escape
+
+function _M.human_shell_escape(str)
+  if not str:find("[%c]") then
+    -- no control characters, and...
+    if not str:find("'") then
+      -- no single quotes, so simple enough to just single-quote the thing
+      return "'" .. str .. "'"
+    elseif not str:find('["$`\\]') then
+      -- single quote but no double quote, dollar, backtick, or backslash
+      return '"' .. str .. '"'
+    end
+  end
+
+  -- If none of the special cases apply, just do the full thing
+  return extended_shell_escape(str)
+end
+
+----------------------------------------------------------------- }}}
 
 return _M

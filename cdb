@@ -1,13 +1,19 @@
-#!/usr/bin/env lua5.3
+#!/usr/bin/env luajit
+-- Should also be executable under lua5.3, since we sit in the intersection of
+-- the two languages and our dependencies do too or are available in both
+-- environments.
 
 --------------------------------------------------------- Imports {{{
 
 local argparse  = require "argparse"
 local dbi       = require "DBI"
+local plapp     = require "pl.app"
 local plpath    = require "pl.path"
 local plstringx = require "pl.stringx"
 local pltablex  = require "pl.tablex"
+local pltext    = require "pl.text"
 
+plapp.require_here()
 local cdblib    = require "cdblib"
 
 ----------------------------------------------------------------- }}}
@@ -27,6 +33,12 @@ local function sql_run_one(sth, ...)
   return sth:fetch()
 end
 
+local function sql_run_one_x(sth, ...)
+  local res, err = sql_run_one(sth, ...)
+  if res == false and err ~= nil then error(err) end
+  return res
+end
+
 ----------------------------------------------------------------- }}}
 -------------------------------------------------- SQL statements {{{
 
@@ -35,8 +47,13 @@ local function sql_mk_path_upsert(dbh)
     ON CONFLICT DO UPDATE SET path = path RETURNING pathid]])
 end
 
-local function sql_mk_path_find(dbh)
+local function sql_mk_pathid_find(dbh)
   return dbh:prepare([[SELECT pathid FROM paths WHERE path = ?]])
+end
+
+local function sql_mk_pathid_find_by_hash(dbh)
+  return dbh:prepare([[SELECT path
+      FROM path_hash NATURAL JOIN paths NATURAL JOIN hashes WHERE hash = ?]])
 end
 
 local function sql_mk_hash_upsert(dbh)
@@ -44,29 +61,113 @@ local function sql_mk_hash_upsert(dbh)
     ON CONFLICT DO UPDATE SET hash = hash RETURNING hashid]])
 end
 
-local function sql_mk_hash_find(dbh)
+local function sql_mk_hashid_find(dbh)
   return dbh:prepare([[SELECT hashid FROM hashes WHERE hash = ?]])
 end
 
-local function sql_mk_path_find_by_hash(dbh)
-  return dbh:prepare([[SELECT path
-      FROM path_hash NATURAL JOIN paths NATURAL JOIN hashes WHERE hash = ?]])
+local function sql_mk_hashid_find_by_path(dbh)
+  return dbh:prepare(
+      [[SELECT hashid FROM path_hash NATURAL JOIN paths WHERE path = ?]])
+end
+
+local function sql_mk_superseder_find_by_hash(dbh)
+  return dbh:prepare([[SELECT supersederid, note
+        FROM hash_hash_superseders
+        JOIN hashes AS o ON o.hashid == oldid
+       WHERE o.hash == ?
+      ]])
+end
+
+local function sql_mk_superseder_find_hash_by_hash(dbh)
+  return dbh:prepare([[SELECT n.hash AS newhash, note
+        FROM hash_hash_superseders
+        JOIN hashes AS n ON n.hashid == newid
+        JOIN hashes AS o ON o.hashid == oldid
+       WHERE o.hash == ?
+      ]])
 end
 
 ----------------------------------------------------------------- }}}
------------------------------------------------- Argparse, part 1 {{{
+----------------------------------------------- Command utilities {{{
 
-local function argparse_for_render(c)
-  c:flag("--unescape")
-   :description("Do not escape the filenames; ambiguous without --nul")
-   :default(false)
-  c:flag("--nul -0")
-   :description("NUL-terminate lines rather than newline")
+local function iter_gnu_digest_stderr(baseiter)
+  local errcb = function(line)
+      io.stderr:write("Bad line: ", line, "\n")
+      return true -- continue iteration
+    end
+  return cdblib.iter_gnu_digest(errcb, baseiter)
+end
+
+local function mk_progress_pair(fn)
+  local progeach = function() end
+  local progfin = function() end
+  if fn then
+    local f = assert(io.open(fn, "w"))
+    local n = 0
+    progeach = function(i)
+      local o = n
+      i = i or 1
+      n = n + i
+      if (n % 256) + i >= 256 then
+        f:write(("Processed %d records\r"):format(n)); f:flush()
+      end
+    end
+    progfin = function()
+      f:write(("Processed %d records\n"):format(n))
+    end
+  end
+  return progeach, progfin
+end
+
+----------------------------------------------------------------- }}}
+---------------------------------------------- Argparse utilities {{{
+
+local function argparse_flag_progress(c)
+  -- This is a bit of a mess.  We want...
+  --   nothing       "/dev/fd/1" (the :init on the positive side)
+  --   --progress    "/dev/fd/2" (the :default on the positive side)
+  --   --progress=x  x           (the value given)
+  --   --no-progress false       (the result of store_false on the "no" side)
+  local nf = c:flag("--no-progress")
+              :target("progress")
+              :action("store_false")
+              :description("Suppress progress reporting")
+  local pf = c:option("--progress")
+              :args(1)
+              :hidden(true)
+              :init("/dev/fd/1")
+              :default("/dev/fd/2"):defmode("a")
+              :description("Show progress")
+  c:mutex(nf, pf) -- applies only to overtly given forms, not defaults; yay!
+  return pf
+end
+
+local function argparse_flag_nul(c)
+  return c:flag("--nul -0")
+   :description("NUL-terminate output records")
    :default(false)
 end
 
-local function renderers_for(args)
-  return cdblib.renderers_for(args.nul, args.unescape)
+local function mk_default_render_template()
+  return pltext.Template("$e$h  $f$z")
+end
+
+local function argparse_for_render(c)
+  c:flag("--unescape")
+   :description("Do not escape filenames ($f is $u); likely use --nul, too")
+   :default(false)
+  c:flag("--nul -0")
+   :description("NUL-terminate records ($z is NUL rather than newline)")
+   :default(false)
+  c:option("--format")
+   :description("Output format specifier")
+   :default("$e$h  $f$z")
+end
+
+local function renderer_for(args)
+  return cdblib.renderer_for(args.nul, args.unescape,
+    args.format and pltext.Template(args.format)
+                 or mk_default_render_template())
 end
 
 local function argparse_flag_inul(c)
@@ -75,65 +176,195 @@ local function argparse_flag_inul(c)
           :default(false)
 end
 
-local function argparse_no_hashes(c)
-  c:flag("--no-hashes")
-   :description("Elide hashes in output; no leading space with --unescape")
-end
-
 local function argparse_for_db_filter(c)
   c:option("--predicate"):default("in")
    -- TODO: :choices({"in", "out"})
-  argparse_no_hashes(c)
   argparse_for_render(c)
 end
 
+local function argparse_opt_graft(c)
+  return c:option("--graft")
+          :default(""):show_default(false)
+          :description("Graft a prefix to input file names")
+end
+
+----------------------------------------------------------------- }}}
+-------------------- Argparse Globals and Command Grouping part 1 {{{
+
 local argp = argparse("cdb", "checksum database tool")
 
--- global options
-argp:option("--database --db")
+-- global options must come before commands, and must be options rather than
+-- arguments if we want --help to do the right thing, sadly.
+argp:option("--db --database")
+  :target("database")
   :args(1)
   :description("Indicate primary checksum database")
 
+-- grouping logic, part 1.  Sadly, this needs to run "all at once" but we want
+-- to define our commands incrementally!
 local argp_groups = {}
 local function argp_group(gname, cmd)
   argp_groups[gname] = argp_groups[gname] or {}
   table.insert(argp_groups[gname], cmd)
 end
 
+-- the workhorse for our subcommands below.
 local function mksubcmd(cmdinit, body)
   local cmd = argp:command()
-  cmdinit(cmd)
   cmd:action(function(args, name)
-               args.command = name
-               args.command_fn = body
+               args._command = name
+               args._command_fn = body
              end)
+  cmdinit(cmd)
   return cmd
 end
 
 ----------------------------------------------------------------- }}}
---------------------------------------------------- Command: init {{{
+------------------------------------------------- Ingest commands {{{
+---------------------------------------------- Command: ingest in {{{
 
 mksubcmd(function(c)
-  c:name("init")
+  c:name("ingest in")
+   :description("Generate commands to ingest new files from digest stream")
+  c:option("--target")
+   :argname("dir")
+   :description("Target for copy commands; if omitted, ignore new files")
+  local relative = c:option("--relative")
+   :argname("path")
+   :description("Don't crush targets to basename; trim given prefix instead")
+  local mv = c:flag("--move")
+   :description("Issue move, not copy, commands for new files")
+  c:option("--prune-log")
+   :argname("file")
+   :description("Log of files with colliding digests; NUL-separated")
+  c:option("--digest-log")
+   :argname("file")
+   :description("Write novel digest records to the indicated file")
+  local inplace = c:flag("--inplace")
+   :description("Record new files in the digest log as they are")
+  c:flag("--verbose")
+   :description("Be chatty on stderr about the generated comand stream")
+  c:flag("--extended-escapes")
+   :description("Write control characters in file names with $'...' escapes")
+  argparse_flag_inul(c)
+  argparse_flag_nul(c)
+  c:mutex(inplace, mv)
+  c:mutex(inplace, relative)
+  argp_group("Ingest", c)
+ end,
+ function(args, dbh)
+  local eol = args.nul and "\0" or "\n"
+
+  local function log_new_hash() end
+  if args.digest_log then
+    local logf = assert(io.open(args.digest_log, "wb"))
+    local rend = cdblib.renderer_for(false, false, mk_default_render_template())
+    function log_new_hash(h, p)
+      return logf:write(rend(h, p))
+    end
+  end
+
+  local function log_prune() end
+  if args.prune_log then
+    local prunef = assert(io.open(args.prune_log, "wb"))
+    function log_prune(p)
+      return prunef:write(p, "\0")
+    end
+  end
+
+
+  local mkiter = iter_gnu_digest_stderr(cdblib.iter_lines_or_nul(args.inul))
+  local sth_hash_find = assert(sql_mk_hashid_find(dbh))
+  local sth_path_by_hash = assert(sql_mk_pathid_find_by_hash(dbh))
+  local sth_superseder_by_hash = assert(sql_mk_superseder_find_by_hash(dbh))
+
+  local shell_escape =
+    args.extended_escapes and cdblib.extended_shell_escape
+                          or  cdblib.posix_shell_escape
+  local human_escape = cdblib.human_shell_escape
+
+  local path_crush =
+    args.relative and function(p) plpath.relpath(p, args.relative) end
+                  or plpath.basename
+
+  function explain_found_hash(h, p)
+    local res = sql_run_one_x(sth_path_by_hash, h)
+    if res then
+      return table.concat({ "Import hash ", h, " from path ", p,
+        " already in database at ", human_escape(res[1])})
+    end
+
+    local res = sql_run_one_x(sth_superseder_by_hash, h)
+    if res then
+      return table.concat({"Import hash ", h, " from path ", p,
+        " already in database but superseded"})
+    end
+
+    return nil
+  end
+
+  for h, p in mkiter() do
+    local res = sql_run_one_x(sth_hash_find, h)
+    if res then
+      local hep = human_escape(p)
+      local exp = explain_found_hash(h, hep)
+      if exp then
+        if args.verbose then io.stderr:write(exp, "\n") end
+        log_prune(p)
+      else
+        -- Leave inexplicable things alone
+        if args.verbose then
+          io.stderr:write("Import hash ", h, " from path ", hep,
+            " in database without explanation!  Leaving in place.\n")
+        end
+      end
+    elseif args.target then
+      local q = plpath.join(args.target, path_crush(p))
+      if args.verbose then
+        io.stderr:write("Import ", human_escape(p),
+                        " to ", human_escape(q), "\n")
+      end
+      io.write(args.move and "mv" or "cp",
+        " ", shell_escape(p), " ", shell_escape(q), eol)
+      log_new_hash(h, q)
+    elseif args.inplace then
+      io.stderr:write("Adding in place ", human_escape(p), "\n")
+      log_new_hash(h, p)
+    elseif args.verbose then
+      io.stderr:write("Not importing new ", human_escape(p), "\n")
+    end
+  end
+ end)
+
+----------------------------------------------------------------- }}}
+----------------------------------------------------------------- }}}
+----------------------------------------- Administrative commands {{{
+---------------------------------------- Command: initialize init {{{
+
+mksubcmd(function(c)
+  c:name("initialize init")
    :description("Initialize the database")
-  argp_group("Administrative Commands", c)
+  argp_group("Administrative", c)
  end,
  function(args, dbh)
   local function ddo(sql) assert(dbi.Do(dbh, sql)) end
+  ddo([[PRAGMA auto_vacuum="incremental";]])
   ddo([[CREATE TABLE IF NOT EXISTS paths (
          pathid INTEGER PRIMARY KEY ASC,
          path TEXT NOT NULL UNIQUE ON CONFLICT FAIL)]])
-  ddo([[CREATE TABLE IF NOT EXISTS hashes ( 
+  ddo([[CREATE TABLE IF NOT EXISTS hashes (
          hashid INTEGER PRIMARY KEY ASC,
          hash   TEXT NOT NULL UNIQUE ON CONFLICT FAIL)]])
   ddo([[CREATE TABLE IF NOT EXISTS hash_hash_superseders (
          supersederid INTEGER PRIMARY KEY ASC,
          oldid INTEGER REFERENCES hashes(hashid),
          newid INTEGER REFERENCES hashes(hashid),
+         timestamp INTEGER DEFAULT CURRENT_TIMESTAMP,
          note TEXT,
          UNIQUE(oldid, newid) ON CONFLICT FAIL)]])
   ddo([[CREATE INDEX IF NOT EXISTS hash_hash_superseders_idx_old
          ON hash_hash_superseders (oldid)]])
+  -- TODO: can we make path_hash a WITHOUT ROWID table?
   ddo([[CREATE TABLE IF NOT EXISTS path_hash (
          pairid INTEGER PRIMARY KEY ASC,
          pathid INTEGER REFERENCES paths(pathid),
@@ -144,32 +375,38 @@ mksubcmd(function(c)
          ON path_hash (pathid)]])
   ddo([[CREATE INDEX IF NOT EXISTS path_hash_idx_hashid
          ON path_hash (hashid)]])
-  ddo([[CREATE VIEW IF NOT EXISTS v_path_hash AS SELECT 
+  ddo([[CREATE VIEW IF NOT EXISTS v_path_hash AS SELECT
           pairid, pathid, hashid, path, hash, timestamp
          FROM path_hash NATURAL JOIN paths NATURAL JOIN hashes]])
   dbh:commit()
 end)
 
 ----------------------------------------------------------------- }}}
---------------------------------------------------- Command: stat {{{
+--------------------------------------------- Command: stats stat {{{
 
 mksubcmd(function(c)
-  c:name("stat")
+  c:name("stats stat")
    :description("Report statistics")
-  argp_group("Administrative Commands", c)
+  argp_group("Administrative", c)
  end,
  function(args, dbh)
    local nhash, npath, nobsv
    nhash = assert(sql_do(dbh, "SELECT COUNT(*) FROM hashes"    )):fetch()[1]
    npath = assert(sql_do(dbh, "SELECT COUNT(*) FROM paths"     )):fetch()[1]
    nobsv = assert(sql_do(dbh, "SELECT COUNT(*) FROM path_hash" )):fetch()[1]
-   print(("nhash=%d npath=%d nobsv=%d"):format(nhash, npath, nobsv))
+   nsupr = assert(sql_do(dbh, "SELECT COUNT(*) FROM hash_hash_superseders"))
+           :fetch()[1]
+   print(("nhash=%d npath=%d nobsv=%d nsuper=%d")
+         :format(nhash, npath, nobsv, nsupr))
  end)
 
+----------------------------------------------------------------- }}}
+------------------------------------------------ Command: dbgc gc {{{
+
 mksubcmd(function(c)
-  c:name("gc")
+  c:name("dbgc gc")
    :description("Generate SQL to prune identifiers not used by observations")
-  argp_group("Administrative Commands", c)
+  argp_group("Administrative", c)
  end,
  function(args, dbh)
   local sth_paths_dead = assert(sql_do(dbh,
@@ -190,77 +427,188 @@ mksubcmd(function(c)
     print(("DELETE FROM hashes WHERE hashid = %d;"):format(h[1]))
   end
  end)
-
 ----------------------------------------------------------------- }}}
---------------------------------------------------- Command: look {{{
+-------------------------------------------------- Command: dbopt {{{
 
 mksubcmd(function(c)
-  c:name("look")
-   :description("Look up checksums for path glob(s)")
-  c:argument("glob", "Path globs to search"):args("+")
-  argparse_for_render(c)
-  argparse_no_hashes(c)
-  argp_group("Queries", c)
+  c:name("dbopt")
+   :description("ANALYZE and VACUUM the database")
+  argp_group("Administrative", c)
  end,
  function(args, dbh)
-   local sql = assert(dbh:prepare(
-     [[SELECT hash, path FROM v_path_hash WHERE path GLOB ?]]))
-   local render_both, render_path = renderers_for(args)
-   local renderer = args.no_hashes
-                    and function(h, p) return render_path(p) end
-                     or render_both
-   for _, glob in ipairs(args.glob) do
-     sql:execute(glob)
-     for row in sql:rows() do
-       io.write(renderer(table.unpack(row)))
+  local function ddo(sql) assert(dbi.Do(dbh, sql)) end
+  ddo("ANALYZE")
+  dbh:commit()
+  dbh:autocommit(true) -- that is, do not implicitly BEGIN a transaction
+  ddo("VACUUM")
+ end)
+
+----------------------------------------------------------------- }}}
+---------------------------------------------- Command: dumpsuper {{{
+
+mksubcmd(function(c)
+  c:name("dumpsuper")
+   :description("Dump information about superseder pairs")
+  local v = c:flag("--verbose")
+   :description("Be slightly more informative, render for human consumption")
+  local n = argparse_flag_nul(c)
+  c:mutex(v, n)
+  argp_group("Administrative", c)
+ end,
+ function(args, dbh)
+
+   local print_row
+   if args.verbose then
+     local sth_path_find_by_hash = assert(sql_mk_pathid_find_by_hash(dbh))
+     local function print_paths(hash)
+       sth_path_find_by_hash:execute(hash)
+       for prow in sth_path_find_by_hash:rows() do
+         io.write("  ", prow[1], "\n")
+       end
+     end
+     function print_row(srow)
+       print("Entry:", srow.note)
+       print(" old:" , srow.oldhash)
+       print_paths(srow.oldhash)
+       print(" new:" , srow.newhash)
+       print_paths(srow.newhash)
+       print()
+     end
+   elseif args.nul then
+     function print_row(srow)
+       io.write(srow.oldhash, " ", srow.newhash, " ", srow.note, "\0")
+     end
+   else
+     function print_row(srow)
+       io.write(srow.oldhash, " ", srow.newhash, " ", srow.note, "\n")
+     end
+   end
+
+   local sth = assert(dbh:prepare(
+    [[SELECT note, o.hash AS oldhash, n.hash AS newhash
+        FROM hash_hash_superseders
+        JOIN hashes AS n ON n.hashid == newid
+        JOIN hashes AS o ON o.hashid == oldid]]))
+   sth:execute()
+   for srow in sth:rows(true) do print_row(srow) end
+ end)
+
+----------------------------------------------------------------- }}}
+--------------------------------------------- Command: checksuper {{{
+
+mksubcmd(function(c)
+  c:name("checksuper")
+   :description("Perform sanity checks on superseders")
+  argp_group("Administrative", c)
+ end,
+ function(args, dbh)
+   local sth_path_find_by_hash = assert(sql_mk_pathid_find_by_hash(dbh))
+   local sth_superseder_by_hash =
+     assert(sql_mk_superseder_find_hash_by_hash(dbh))
+
+   local sth = assert(dbh:prepare(
+    [[SELECT note, o.hash AS oldhash, n.hash AS newhash
+        FROM hash_hash_superseders
+        JOIN hashes AS n ON n.hashid == newid
+        JOIN hashes AS o ON o.hashid == oldid]]))
+   sth:execute()
+   for srow in sth:rows(true) do
+     -- Ensure that each new-side superseder is either itself superseded or
+     -- has a path in the database
+     local res = sql_run_one_x(sth_path_find_by_hash, srow.newhash)
+     if res == nil then
+       local res = sql_run_one_x(sth_superseder_by_hash, srow.newhash)
+       if res == nil then
+         print("Superseder record without replacement:")
+         print(" note:", srow.note)
+         print(" old:" , srow.oldhash)
+         print(" new:" , srow.newhash)
+         print()
+       end
      end
    end
  end)
 
 ----------------------------------------------------------------- }}}
---------------------------------------------------- Command: mapp {{{
+----------------------------------------------------------------- }}}
+-------------------------------------------------- Query commands {{{
+-------------------------------------------- Command: lookup look {{{
 
 mksubcmd(function(c)
-  c:name("mapp")
-   :description("Map paths to hashes in the database, like look")
-  c:flag("--no-paths")
-   :description("Print only the resulting hashes")
-   :default(false)
+  c:name("lookup look")
+   :description("Look up checksums for path glob(s)")
+  c:argument("glob")
+    :args("*")
+    :description("Path globs to search (none to stream from stdin)")
+  c:flag("--timestamps")
+   :description("Prefix lines by recorded observation timestamp")
+  argparse_for_render(c)
+  argp_group("Query", c)
+ end,
+ function(args, dbh)
+   local sql = assert(dbh:prepare(
+     [[SELECT timestamp, hash, path FROM v_path_hash WHERE path GLOB ?]]))
+   local rend_dig = renderer_for(args)
+   local rend_row =
+     args.timestamps
+      and function(row)
+            return row.timestamp, " ", rend_dig(row.hash, row.path)
+          end
+      or  function(row) return rend_dig(row.hash, row.path) end
+   local iter =
+     #args.glob ~= 0 and cdblib.iter_table(args.glob) or cdblib.iter_lines()
+   for glob in iter() do
+     sql:execute(glob)
+     for row in sql:rows(true) do
+       io.write(rend_row(row))
+     end
+   end
+ end)
+
+----------------------------------------------------------------- }}}
+------------------------------------------- Command: mappath mapp {{{
+
+mksubcmd(function(c)
+  c:name("mappath mapp")
+   :description("Map paths (on stdin) to hashes in the database; look w/o glob")
   argparse_for_render(c)
   argparse_flag_inul(c)
-  argp_group("Queries", c)
+  argp_group("Query", c)
  end,
  function(args, dbh)
   local sth = assert(dbh:prepare(
      [[SELECT hash FROM v_path_hash WHERE path = ?]]))
-  local render = args.no_paths
-   and function(h, p) return h, args.nul and '\0' or '\n' end
-    or renderers_for(args)
-
+  local render = renderer_for(args)
   local mkiter = cdblib.iter_lines_or_nul(args.inul)
   for p in mkiter() do
    sth:execute(p)
    for row in sth:rows() do
      io.write(render(row[1], p))
    end
+   -- TODO: What if we didn't find anything?
   end
  end)
 
 ----------------------------------------------------------------- }}}
---------------------------------------------------- Command: maph {{{
+------------------------------------------- Command: maphash maph {{{
 
 mksubcmd(function(c)
-  c:name("maph")
+  c:name("maphash maph")
    :description("Map hashes to paths in the database")
+  local hash = c:argument("hash")
+   :args("*")
+   :description("Hashes to look up")
   argparse_for_render(c)
-  argparse_flag_inul(c)
-  argp_group("Queries", c)
+  local inul = argparse_flag_inul(c)
+  c:mutex(hash, inul)
+  argp_group("Query", c)
  end,
  function(args, dbh)
-  local sth = assert(dbh:prepare(
-    [[SELECT path FROM v_path_hash WHERE hash = ?]]))
-  local render = renderers_for(args)
-  local mkiter = cdblib.iter_lines_or_nul(args.inul)
+  local sth = assert(sql_mk_pathid_find_by_hash(dbh))
+  local render = renderer_for(args)
+  local mkiter =
+    #args.hash ~= 0 and cdblib.iter_table(args.hash)
+                    or  cdblib.iter_lines_or_nul(args.inul)
   for h in mkiter() do
    sth:execute(h)
    for row in sth:rows() do
@@ -270,12 +618,12 @@ mksubcmd(function(c)
  end)
 
 ----------------------------------------------------------------- }}}
---------------------------------------------------- Command: cflx {{{
+----------------------------------------- Command: conflicts cflx {{{
 
 mksubcmd(function(c)
-  c:name("cflx")
+  c:name("conflicts cflx")
    :description("Find conflicting measurements of paths")
-  argp_group("Queries", c)
+  argp_group("Query", c)
  end,
  function(args, dbh)
   local sth = assert(sql_do(dbh,
@@ -291,120 +639,75 @@ mksubcmd(function(c)
       print("PATH", (cdblib.escape_gnu_digest(p)))
     end
     print((" observed hash %s with id %d at %s"):format(h, pairid, ts))
+    -- TODO: that's probably not the right thing to print
   end
  end)
 
 ----------------------------------------------------------------- }}}
---------------------------------------------------- Command: addh {{{
+---------------------------------------- Command: filterhash filh {{{
 
 mksubcmd(function(c)
-  c:name("addh")
-   :description("Ingest digest tool output")
-  c:option("--graft"):default("")
-   :description("Graft a prefix to input file names")   
-  c:flag("--replace-paths")
-   :description("Remove all existing observations of reported paths")
-  argparse_flag_inul(c)
-  argp_group("Updates", c)
- end,
- function(args, dbh)
-  local sth_path_upsert = assert(sql_mk_path_upsert(dbh))
-  local sth_hash_upsert = assert(sql_mk_hash_upsert(dbh))
-  local sth_obsv_del = assert(dbh:prepare(
-    [[DELETE FROM path_hash WHERE pathid = ?]]))
-  local sth_obsv_upsert = assert(dbh:prepare(
-    [[INSERT OR REPLACE INTO path_hash (pathid, hashid) VALUES (?, ?)]]))
-
-  local mkiter = cdblib.iter_lines_or_nul(args.inul)
-
-  local nadded = 0
-
-  for h, p in cdblib.iter_gnu_digest(mkiter)() do
-    p = plpath.normpath(plpath.join(args.graft, p))
-    local pid = sql_run_one(sth_path_upsert, p)[1]
-    if args.replace_path then sth_obsv_del:execute(pid) end
-    local hid = sql_run_one(sth_hash_upsert, h)[1]
-    sth_obsv_upsert:execute(pid, hid)
-    if sth_obsv_upsert:affected() > 0 then dbh:commit() end
-
-    nadded = nadded + 1
-    io.write(("Processed %d hashes\r"):format(nadded)); io.flush()
-  end
-  io.write("\n")
- end)
-
------------------------------------------------------------------ }}}
---------------------------------------------------- Command: filh {{{
-
-mksubcmd(function(c)
-  c:name("filh")
+  c:name("filterhash filh")
    :description("Filter digest tool lines against database by hash")
   argparse_for_db_filter(c)
-  argp_group("Queries", c)
+  argp_group("Query", c)
  end,
  function(args, dbh)
   local rex = (args.predicate == "in")
-  local rend_both, rend_path = renderers_for(args)
-  local renderer = args.no_hashes
-                   and function(h, p) return rend_path(p) end
-                    or rend_both
-  local sth = sql_mk_hash_find(dbh)
-  for h, p in cdblib.iter_gnu_digest(cdblib.mk_lines_iter())() do
-   local res, err = sql_run_one(sth, h)
-   if res == false and err ~= nil then error(err) end
+  local renderer = renderer_for(args)
+  local sth = assert(sql_mk_hashid_find(dbh))
+  for h, p in iter_gnu_digest_stderr(cdblib.iter_lines())() do
+   local res = sql_run_one_x(sth, h)
    if (res ~= nil) == rex then io.write(renderer(h, p)) end
   end
  end)
 
 ----------------------------------------------------------------- }}}
---------------------------------------------------- Command: filp {{{
+---------------------------------------- Command: filterpath filp {{{
 
 mksubcmd(function(c)
-  c:name("filp")
+  c:name("filterpath filp")
    :description("Filter digest tool lines against database by path")
   argparse_for_db_filter(c)
-  c:flag("--just-paths")
-   :description("Input is a series of paths without digests")
+  c:option("--in-paths")
+   :description("Input is a series of bare paths; optional arg is dummy digest")
+   :args(1)
+   :default("-"):defmode("a")
   argparse_flag_inul(c)
-  argp_group("Queries", c)
+  argp_group("Query", c)
  end,
  function(args, dbh)
   local rex = (args.predicate == "in")
-  local rend_both, rend_path = renderers_for(args)
-  local renderer = args.no_hashes
-                   and function(h, p) return rend_path(p) end
-                    or rend_both
+  local renderer = renderer_for(args)
 
   local mkiter = cdblib.iter_lines_or_nul(args.inul)
-  local mkiter = args.just_paths
-   and cdblib.iter_just_paths_as_digest(mkiter)
-    or cdblib.iter_gnu_digest(mkiter)
+  local mkiter = args.in_paths
+   and cdblib.iter_just_paths_as_digest(args.in_paths, mkiter)
+    or iter_gnu_digest_stderr(mkiter)
 
-  local sth = sql_mk_path_find(dbh)
+  local sth = sql_mk_pathid_find(dbh)
   for h, p in mkiter() do
-   local res, err = sql_run_one(sth, p)
-   if res == false and err ~= nil then error(err) end
+   local res = sql_run_one_x(sth, p)
    if (res ~= nil) == rex then io.write(renderer(h, p)) end
   end
  end)
 
 ----------------------------------------------------------------- }}}
---------------------------------------------------- Command: verh {{{
+--------------------------------- Command: verifyhash verify verh {{{
 
 mksubcmd(function(c)
-  c:name("verh")
+  c:name("verifyhash verify verh")
    :description("Verify reported digests against database")
-  c:option("--graft")
-   :description("Graft a prefix to input file names")   
-   :default("")
+  argparse_opt_graft(c)
   c:flag("--also-mismatch")
    :description("Also report other hashes associated with a path")
-  argp_group("Queries", c)
+  argparse_flag_inul(c)
+  argp_group("Query", c)
  end,
  function(args, dbh)
-  local sth_path_find = assert(sql_mk_path_find(dbh))
-  local sth_hash_find = assert(sql_mk_hash_find(dbh))
-  local sth_path_find_by_hash = assert(sql_mk_path_find_by_hash(dbh))
+  local sth_path_find = assert(sql_mk_pathid_find(dbh))
+  local sth_hash_find = assert(sql_mk_hashid_find(dbh))
+  local sth_path_find_by_hash = assert(sql_mk_pathid_find_by_hash(dbh))
   local sth_obsv_find_by_pathid_hash =
     assert(dbh:prepare([[SELECT pairid
       FROM path_hash NATURAL JOIN hashes WHERE pathid = ? AND hash = ?]]))
@@ -413,9 +716,9 @@ mksubcmd(function(c)
       FROM path_hash NATURAL JOIN hashes WHERE pathid = ? AND hash != ?]]))
 
   local fail = 0
-  for h, p in cdblib.iter_gnu_digest(cdblib.mk_lines_iter())() do
+  for h, p in iter_gnu_digest_stderr(cdblib.iter_lines_or_nul(args.inul))() do
     p = plpath.normpath(plpath.join(args.graft, p))
-    local pid = sql_run_one(sth_path_find, p)
+    local pid = sql_run_one_x(sth_path_find, p)
     if pid == nil then
       -- Path not in database
       print(("Path '%s' is not in database"):format(p))
@@ -436,12 +739,12 @@ mksubcmd(function(c)
       -- Path in database
       pid = pid[1]
       local didfail = false
-      local obsvid = sql_run_one(sth_obsv_find_by_pathid_hash, pid, h)
+      local obsvid = sql_run_one_x(sth_obsv_find_by_pathid_hash, pid, h)
       if obsvid == nil then
         -- Observation not in database
         print(("Path '%s' not associated with that hash in database"):format(p))
         didfail = true
-      else print("OK: ", p) -- XXX
+      else print("OK:", p) -- TODO
       end
       if args.also_mismatch then
         sth_obsv_find_by_pathid_nothash:execute(pid, h)
@@ -466,67 +769,164 @@ mksubcmd(function(c)
   c:name("diff")
    :description("Compare against another database")
   c:argument("db2")
-  c:option("--flavor"):default("both")
+  c:option("--flavor"):default("all")
    :description("Database aspects to compare")
-   -- TODO :choices("hash", "path", "both")
+   -- TODO :choices("hash", "path", "both", "supers", "all")
   c:option("--which"):default("symm")
    :description("Direction of comparison")
    -- TODO :choices("sub", "super", "symm")
   c:flag("--no-headers")
    :description("Suppress headers in output")
   argparse_for_render(c)
-  argp_group("Queries", c)
+  argp_group("Query", c)
  end,
  function(args, dbh)
-  local rend_hash, rend_path = renderers_for(args)
+  local renderer = renderer_for(args)
   local header = args.no_headers and function() end or print
   local function header(x) if not args.no_headers then print(x) end end
   dbi.Do(dbh, "ATTACH DATABASE ? AS other", args.db2)
-  
-  if pltablex.find({"path", "both"}, args.flavor) then
+
+  if pltablex.find({"path", "both", "all"}, args.flavor) then
     if pltablex.find({"sub", "symm"}, args.which) then
       header("-- Paths in local database not in remote:")
-      for row in sql_do(dbh,
+      for row in assert(sql_do(dbh,
        [[SELECT path FROM paths
          WHERE path NOT IN (SELECT path FROM other.paths)
-         ORDER BY path]]):rows() do
-        io.write(rend_path(row[1]))
-      end 
+         ORDER BY path]])):rows() do
+        io.write(renderer("", row[1]))
+      end
     end
     if pltablex.find({"super", "symm"}, args.which) then
       header("-- Paths in remote database not in local:")
-      for row in sql_do(dbh,
+      for row in assert(sql_do(dbh,
        [[SELECT path FROM other.paths
          WHERE path NOT IN (SELECT path FROM paths)
-         ORDER BY path]]):rows() do
-        io.write(rend_path(row[1]))
-      end 
+         ORDER BY path]])):rows() do
+        io.write(renderer("", row[1]))
+      end
     end
   end
 
-  if pltablex.find({"hash", "both"}, args.flavor) then
+  if pltablex.find({"hash", "both", "all"}, args.flavor) then
     if pltablex.find({"sub", "symm"}, args.which) then
       header("-- Hashes in local database not in remote:")
-      for row in sql_do(dbh,
+      for row in assert(sql_do(dbh,
        [[SELECT hash, path
          FROM hashes NATURAL JOIN path_hash NATURAL JOIN paths
          WHERE hash NOT IN (SELECT hash FROM other.hashes)
-         ORDER BY path]]):rows() do
-        io.write(rend_hash(table.unpack(row)))
-      end 
+         ORDER BY path]])):rows() do
+        io.write(renderer(table.unpack(row)))
+      end
     end
     if pltablex.find({"super", "symm"}, args.which) then
       header("-- Hashes in remote database not in local:")
-      for row in sql_do(dbh,
+      for row in assert(sql_do(dbh,
        [[SELECT hash, path
          FROM other.hashes NATURAL JOIN other.path_hash NATURAL JOIN other.paths
          WHERE hash NOT IN (SELECT hash FROM hashes)
-         ORDER BY path]]):rows() do
-        io.write(rend_hash(table.unpack(row)))
-      end 
+         ORDER BY path]])):rows() do
+        io.write(renderer(table.unpack(row)))
+      end
     end
   end
+
+  if pltablex.find({"supers", "all"}, args.flavor) then
+    if pltablex.find({"sub", "symm"}, args.which) then
+      header("-- Superseders in local database not in remote:")
+      for row in assert(sql_do(dbh,
+       [[SELECT old.hash, new.hash, timestamp, note
+         FROM hash_hash_superseders AS s
+         JOIN hashes AS old ON s.oldid == old.hashid
+         JOIN hashes AS new ON s.newid == new.hashid
+         WHERE (old.hash, new.hash) NOT IN (
+           SELECT oold.hash, onew.hash
+             FROM other.hash_hash_superseders AS os
+             JOIN other.hashes AS oold ON os.oldid == oold.hashid
+             JOIN other.hashes AS onew ON os.newid == onew.hashid
+           )
+        ]])):rows() do
+        row[3] = table.concat({'(', row[3], ')'})
+        io.write(table.concat(row, " "), "\n")
+      end
+    end
+    if pltablex.find({"super", "symm"}, args.which) then
+      header("-- Superseders in remote database not in local:")
+      for row in assert(sql_do(dbh,
+       [[SELECT oold.hash, onew.hash, timestamp, note
+         FROM other.hash_hash_superseders AS os
+         JOIN other.hashes AS oold ON os.oldid == oold.hashid
+         JOIN other.hashes AS onew ON os.newid == onew.hashid
+         WHERE (oold.hash, onew.hash) NOT IN (
+           SELECT old.hash, new.hash
+             FROM hash_hash_superseders AS s
+             JOIN hashes AS old ON s.oldid == old.hashid
+             JOIN hashes AS new ON s.newid == new.hashid
+           )
+        ]])):rows() do
+        row[3] = table.concat({'(', row[3], ')'})
+        io.write(table.concat(row, " "), "\n")
+      end
+    end
+  end
+
   header("-- End of diff report")
+ end)
+
+----------------------------------------------------------------- }}}
+----------------------------------------------------------------- }}}
+------------------------------------------------- Update commands {{{
+------------------------------------------- Command: addhash addh {{{
+
+mksubcmd(function(c)
+  c:name("addhash addh")
+   :description("Ingest digest tool output")
+  argparse_opt_graft(c)
+  argparse_flag_inul(c)
+  argparse_flag_progress(c)
+  c:flag("--replace-paths")
+   :description("Remove all existing observations of reported paths")
+  c:flag("--keep-timestamps")
+   :description("Do not update the observation timestamp fields")
+  argp_group("Update", c)
+ end,
+ function(args, dbh)
+  local sth_path_upsert = assert(sql_mk_path_upsert(dbh))
+  local sth_hash_upsert = assert(sql_mk_hash_upsert(dbh))
+  local sth_obsv_del = assert(dbh:prepare(
+    [[DELETE FROM path_hash WHERE pathid = ?]]))
+  local sth_obsv_upsert = assert(dbh:prepare(
+    [[INSERT OR IGNORE INTO path_hash (pathid, hashid) VALUES (?, ?)]]))
+  local sth_obsv_upd_ts = not args.keep_timestamps and assert(dbh:prepare(
+    [[UPDATE path_hash SET timestamp = CURRENT_TIMESTAMP
+      WHERE pathid = ? AND hashid = ?]]))
+
+  local mkiter = cdblib.iter_lines_or_nul(args.inul)
+
+  local progeach, progfin = mk_progress_pair(args.progress)
+
+  for h, p in iter_gnu_digest_stderr(mkiter)() do
+    local docommit = false
+    p = plpath.normpath(plpath.join(args.graft, p))
+    local pid = sql_run_one_x(sth_path_upsert, p)[1]
+    assert (pid ~= nil)
+    if args.replace_paths then
+      sth_obsv_del:execute(pid)
+      docommit = sth_obsv_del:affected() > 0
+    end
+    local hid = sql_run_one_x(sth_hash_upsert, h)[1]
+    assert (hid ~= nil)
+    sth_obsv_upsert:execute(pid, hid)
+    docommit = docommit or sth_obsv_upsert:affected() > 0
+    if sth_obsv_upd_ts then
+      sth_obsv_upd_ts:execute(pid, hid)
+      assert(sth_obsv_upd_ts:affected() == 1)
+      docommit = true
+    end
+    if docommit then dbh:commit() end
+
+    progeach()
+  end
+  progfin()
  end)
 
 ----------------------------------------------------------------- }}}
@@ -535,63 +935,193 @@ mksubcmd(function(c)
 mksubcmd(function(c)
   c:name("domv")
    :description("Remove given paths if hashes exist elsewhere")
+  local path = c:argument("path")
+   :args("*")
+   :description("Paths to move (none to stream from stdin)")
   c:flag("--dry-run -n")
    :description("Do not perform deletions")
-   :default(false)
-  argparse_flag_inul(c)
-  argp_group("Updates", c)
+  c:flag("--verbose")
+   :description("Be chatty")
+  local inul = argparse_flag_inul(c)
+  c:mutex(path, inul)
+  argp_group("Update", c)
  end,
  function(args, dbh)
   local qsth = assert(dbh:prepare(
     [[SELECT path FROM v_path_hash
        WHERE hash IN (SELECT hash FROM v_path_hash WHERE path = ?1)
          AND path != ?1]]))
-  local dsth = assert(dbh:prepare(
+
+  local ssth = assert(dbh:prepare(
+    [[SELECT hash_hash_superseders.timestamp, note
+        FROM hash_hash_superseders
+        JOIN path_hash ON path_hash.hashid == hash_hash_superseders.oldid
+        JOIN paths ON path_hash.pathid == paths.pathid
+       WHERE path = ?]]))
+
+  local dhsth = assert(dbh:prepare(
     [[DELETE FROM path_hash WHERE pathid IN
         (SELECT pathid FROM paths WHERE path = ?)]]))
 
-  local mkiter = cdblib.iter_lines_or_nul(args.inul)
-  for p in mkiter() do
-   assert(qsth:execute(p))
+  local dsth = assert(dbh:prepare([[DELETE FROM paths WHERE path = ?]]))
 
-   print("Trying mv:", p)
+  local mkiter = #args.path ~= 0
+    and cdblib.iter_table(args.path)
+    or  cdblib.iter_lines_or_nul(args.inul)
+   
+  for p in mkiter() do
+   if args.verbose then print("Trying mv:", p) end
 
    local ok = false
+
+   assert(qsth:execute(p))
    for row in qsth:rows() do
-     print("Found", row[1])
+     if args.verbose then print("Found path", row[1]) end
      ok = true
    end
 
+   if not ok then
+     assert(ssth:execute(p))
+     for row in ssth:rows() do
+       if args.verbose then print("Found super", row[2], "at", row[1]) end
+       ok = true
+     end
+   end
+
    if ok and not args.dry_run then
+     assert(dhsth:execute(p))
      assert(dsth:execute(p))
      dbh:commit()
-     print("OK", dsth:affected())
+     if args.verbose then print("OK", dsth:affected()) end
    end
   end
  end)
 
----------------------------------------------------------------------------- }}}
---------------------------------------------------- Command Grouping, Part 2 {{{
+----------------------------------------------------------------- }}}
+------------------------------------- Command: addsuperhash addsh {{{
 
-for _, g in ipairs{"Queries", "Updates", "Administrative Commmands"} do
-  argp:group(g, table.unpack(argp_groups[g] or {}))
+local function iter_supers(baseiter)
+  return function() return coroutine.wrap(function()
+    for line in baseiter() do
+      if line == nil then return nil end
+      local oh, nh, xtra = line:match("^(%x*)%s+(%x*)(.*)$")
+      if oh == nil then
+        print("Bad line (missing hashes?):", line) -- XXX
+      else
+        local txt = xtra:match("^%s*(.*)$")
+        if xtra ~= nil and txt == nil then
+          print("Bad line (malformed suffix):", line) -- XXX
+        else
+          coroutine.yield(oh, nh, txt or "")
+        end
+      end
+    end
+  end) end
+end
+
+mksubcmd(function(c)
+  c:name("addsuperhash addsh")
+   :description("Ingest superseder assertions (\"hash hash note\")")
+  argparse_flag_progress(c)
+  argparse_flag_inul(c)
+  argp_group("Update", c)
+ end,
+ function(args, dbh)
+  local sth_hash_upsert = assert(sql_mk_hash_upsert(dbh))
+  local sth_super_upsert = assert(dbh:prepare(
+    [[INSERT OR REPLACE INTO hash_hash_superseders (oldid, newid, note)
+      VALUES (?, ?, ?)]]))
+
+  local mkiter = cdblib.iter_lines_or_nul(args.inul)
+  local progeach, progfin = mk_progress_pair(args.progress)
+
+  for oh, nh, txt in iter_supers(mkiter)() do
+    local ohid = sql_run_one_x(sth_hash_upsert, oh)[1]
+    assert (ohid ~= nil)
+    local nhid = sql_run_one_x(sth_hash_upsert, nh)[1]
+    assert (nhid ~= nil)
+    sth_super_upsert:execute(ohid, nhid, txt)
+    if sth_super_upsert:affected() > 0 then dbh:commit() end
+
+    progeach()
+  end
+  progfin()
+ end)
+
+----------------------------------------------------------------- }}}
+------------------------------------------ Command: addsuper adds {{{
+
+mksubcmd(function(c)
+  c:name("addsuper adds")
+   :description("Indicate that one path is the superseder of another")
+  c:argument("oldpath")
+   :description("Path to superseded file")
+  c:argument("newpath")
+   :description("Path to superseder file")
+  c:argument("note")
+   :args("*")
+   :description("Note for superseder entry; multiple args concat by space")
+  argp_group("Update", c)
+ end,
+ function(args, dbh)
+  local sth_hash_by_path = assert(sql_mk_hashid_find_by_path(dbh))
+
+  local oldhid = sql_run_one_x(sth_hash_by_path, args.oldpath)
+  if oldhid == nil then
+    print("No hash associated with old path")
+    return
+  elseif sth_hash_by_path:fetch() then
+    print("Two hashes associated with old path; refusing")
+    return
+  end
+  oldhid = oldhid[1]
+
+  local newhid = sql_run_one_x(sth_hash_by_path, args.newpath)
+  if newhid == nil then
+    print("No hash associated with new path")
+    return
+  elseif sth_hash_by_path:fetch() then
+    print("Two hashes associated with new path; refusing")
+    return
+  end
+  newhid = newhid[1]
+
+  if oldhid == newhid then
+    print("Equal hashes for paths; refusing")
+    return
+  end
+
+  sql_do(dbh, [[INSERT OR REPLACE INTO
+    hash_hash_superseders (oldid, newid, note) VALUES (?,?,?)]],
+    oldhid, newhid, table.concat(args.note, " "))
+  dbh:commit()
+ end)
+
+----------------------------------------------------------------- }}}
+----------------------------------------------------------------- }}}
+--------------------------- Argparse and Command Grouping, Part 2 {{{
+
+for _, g in ipairs{"Ingest", "Query", "Update", "Administrative"} do
+  argp:group(g .. " commands", table.unpack(argp_groups[g] or {}))
   argp_groups[g] = nil
 end
 
 -- Any stragglers?
 for k,v in pairs(argp_groups) do argp:group(k, table.unpack(v)) end
 
----------------------------------------------------------------------------- }}}
--------------------------------------------------------- Top-level executive {{{
+----------------------------------------------------------------- }}}
+--------------------------------------------- Top-level executive {{{
 
 local args = argp:parse()
-if not args.database then error "--database is required" end
+-- io.stderr:write((require "pl.pretty").write(args), "\n")
+
+if not args.database then argp:error("Database is required") end
 
 local dbh, err = dbi.Connect("SQLite3", args.database)
 if not dbh then
   error ("Database error: " .. err)
 end
 
-args:command_fn(dbh)
+args:_command_fn(dbh)
 
----------------------------------------------------------------------------- }}}
+----------------------------------------------------------------- }}}

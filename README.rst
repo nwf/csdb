@@ -19,6 +19,17 @@ like ``find`` and the GNU coreutils digest programs (e.g. ``sha512sum``),
 delegating details of filesystem traversal and choice of hash and so on to the
 user.
 
+Dependencies
+############
+
+This program requires...
+
+* either the Lua 5.3 interpreter or luajit,
+
+* the Lua ``argparse`` and ``penlight`` libraries, and
+
+* ``lua-dbi`` and its ``lua-dbi-sqlite3`` driver.
+
 Supported Operations
 ####################
 
@@ -43,7 +54,7 @@ Or, for all files under a path::
 
 If we have a pile of digest files already, each of which contains digests of
 paths relative to its location, we can generate a database, ``${DB2}`` from them
-with the assistance of the ``digestrelative`` tool::
+with the assistance of the ``cdb-digestrelative`` tool::
 
   find ${DIR} -type f -name SHA512SUMS -print0 | cdb-digestrelative --inul | cdb --db ${DB} addh
 
@@ -69,28 +80,51 @@ because the former can be more informative in the case of mismatching digests
 digest).  If it's easier to have the database generate the set of files, that
 can be done::
 
-   cdb --db ${DB} look \* --no-hashes --unescape --nul | xargs -0 sha512sum | cdb --db ${DB} verh
+   cdb --db ${DB} look \* --format '$u$z' --nul | xargs -0 sha512sum | cdb --db ${DB} verh
 
-Add Checksums For Missing Files
-===============================
+Add Missing Checksums
+=====================
 
-We can quickly construct a "just paths" database, which associates all paths
-with a single digest, from the current state of the file system as follows::
+We can augment a database of files by filtering a list of files we have to
+exclude the list of files we know about.  If, however, there is a possibility
+that some of these files are duplicates of ones already in the database, you may
+be better off using ``ingest`` `reflexively <ingest_reflex>`_.
 
-   cdb --db ${JPDB} init
-   find ${DIR} -type f -printf "0  %p\\0" | ./cdb --db ${JPDB} addh --inul
+Using filterpath
+----------------
 
-This database may not seem very useful, but when combined with ``cdb diff`` we
-can quickly find all paths whose checksums are unknown to the database::
+We can generate the list of files we don't know about using ``find`` and
+``cdb filterpath``::
 
-   cdb --db ${DB} diff ${JPDB} --flavor=path --which=super
+   find ${DIR} -type f -print0 | \
+     cdb --db ${DB} filterpath --inul --format '$u$z' --nul > ${DB}.new-files0
+
+.. _xargs_sha:
 
 We can then script computing those files' checksums and adding the new reports
 to the database::
 
-   cdb --db ${DB} diff ${JPDB} --flavor=path --which=super --no-headers --nul --unescape > ${JPDB}.new-files0
-   xargs -0 sha512sum > ${JPDB}.new < ${JPDB}.new-files0
-   cdb --db ${DB} addh < ${JPDB}.new
+   xargs -0 sha512sum > ${DB}.new < ${DB}.new-files0
+   cdb --db ${DB} addh < ${DB}.new
+
+Using diff
+----------
+
+.. _just_paths:
+
+For a different approach, we can quickly construct a "just paths" database,
+which associates all paths with a single digest, from the current state of the
+file system as follows::
+
+   cdb --db ${JPDB} init
+   find ${DIR} -type f -printf "0  %p\\0" | cdb --db ${JPDB} addh --inul
+
+This database may not seem very useful, but when combined with ``cdb --db diff`` we
+can quickly find all paths whose checksums are unknown to the database::
+
+   cdb --db ${DB} diff ${JPDB} --flavor=path --which=super --format '$u$z' --nul > ${DB}.new-files0
+
+And then proceed as `above <xargs_sha>`_.
 
 From Another Database
 ---------------------
@@ -99,7 +133,7 @@ If we have another database that knows digests for our files, rather than
 computing digests again, we can extract checksums from ``${DB2}`` and install
 them into ``${DB}``::
 
-   cdb --db ${DB2} mapp --inul < ${JPDB}.new-files0 | cdb --db ${DB} addh
+   cdb --db ${DB2} look --inul < ${DB}.new-files0 | cdb --db ${DB} addh
 
 Responding to File Moves
 ========================
@@ -108,7 +142,7 @@ Armed with a "just paths" database as per the above, we can then direct the
 database to prune tracked paths not in the "just paths" database if the hashes
 are observed elsewhere::
 
-   cdb --db ${DB} diff ${JPDB} --flavor=path --which=sub --no-headers --nul --unescape > ${JPDB}.missing-files0
+   cdb --db ${DB} diff ${JPDB} --flavor=path --which=sub --no-headers --format '$u$z' --nul > ${JPDB}.missing-files0
    cdb --db ${DB} domv --inul < ${JPDB}.missing-files0
    cdb --db ${DB} gc > ${DB}.gc
    sqlite3 ${DB} < ${DB}.gc
@@ -138,78 +172,82 @@ given hash.
 Add Superseder
 ==============
 
+By Existing Paths
+-----------------
+
 Indicate that some file contents are to be considered a lesser version of some
-other contents.  
+other contents::
 
+   cdb --db ${DB} addsuper /old/path /new/path
+
+After this command is run, ``domv`` will be willing to remove the ``/old/path``
+entry from the database.
 .. TODO
 
-Report Novelty
-==============
+By Hashes
+---------
 
-Given a path, measure its checksum and report if it does not match, and has not
-been superseded by, any observation already recorded in the database.
+Superseder records can also be added from ``stdin`` using ``addsuperhash`` (or
+``addsh``).  This command reads in lines of the form ::
 
-.. TODO
+  old-digest new-digest notes
 
-.. This command would be useful for ingesting things into a library or pruning
-   collections of files outside the library.
+The ``notes`` field extends to the end of the line; if newlines are desired in
+the recorded notes, use ``--inul`` and separate records by NUL bytes.
 
---------------------------------------------------------------------------------
+Ingest
+======
 
-Example Uses
-############
+Given a digest stream, partition it into hashes already in the database and
+hashes novel to the database.  For the former, optionally generate ``rm``
+commands, and for the latter, optionally generate ``mv`` or ``cp`` commands
+to import into the library.  Novel hashes, and their new paths, may optionally
+be recorded as well, to be subsequently added to the database::
 
-A photo library
-===============
+  find /source/path -type f -exec sha512sum {} \+ | \
+    cdb --db ${DB} ingest --target /new/path --prune
 
-Suppose ``/mnt/photos`` contains a collection of photos.  We might want to...
+This will produce a stream of shell commands to copy files given by ``find``
+into the ``/new/path`` directory (using their basename therein).  Passing
+``--move`` generates move rather than copy commands.  Passing ``--prune``
+additionally issues ``rm`` commands for *source* files whose hashes collide with
+something already in the database.
 
-* measure all the files in that directory, flagging new and updated contents::
+The ``--digest-log FILE`` option will cause ``import`` to write to FILE every
+new digest encountered in the stream, associated with its new name in
+``/new/path``.  This can then be fed back through ``addhash`` without needing to
+recompute digests.
 
-    $ cksdb /mnt/photos/.cksdb observe /mnt/photos
+``ingest`` knows how to quote paths for safe handling by POSIX shells (though
+its mechanism is somewhat crude and not always great for human consumption).
+However, POSIX shells are willing to forgive control characters in quoted
+strings while humans and terminals are more likely to make a mess of things.
+The ``--extended-escapes`` flag will cause ``ingest`` to be more aggressive
+about quoting such characters, making them overtly visible.
 
-* measure all the files in that directory, automatically updating the database::
+.. _injest_reflex:
 
-    $ cksdb /mnt/photos/.cksdb observe --new --changed /mnt/photos
+Reflexive Use of Ingest
+-----------------------
 
-* report duplicates anywhere in the library::
+The ``ingest`` command can also be used "reflexively" on the managed collection
+of files to either add files that are not tracked or prune files that have
+presence elsewhere in the database.  We can enumerate files not tracked using
+``filterpath`` and compute their checksums as we did in `Add Missing Checksums`_
+above::
 
-    $ cksdb /mnt/photos/.cksdb ls --duplicate
+   find ${DIR} -type f -print0 | \
+     cdb --db ${DB} filterpath --in-path --predicate=out -0 -1 --format '$u$z' > ${DB}.new-files0
+   xargs -0 sha512sum > ${DB}.new < ${DB}.new-files0
 
-* report files in a particular directory that also exist anywhere else in the
-  library::
+We can then prepare to prune duplicates and add unique files::
 
-    $ cksdb /mnt/photos/.cksdb ls --duplicate /mnt/photos/dir1
+   cdb --db ${DB} ingest -1 --prune --inplace --digest-log ${DB}.new2 < ${DB}.new > ${DB}.prune
 
-* restrict the search for duplication to another direcotry::
+Add new files to the database with::
 
-    $ cksdb /mnt/photos/.cksdb ls --duplicate /mnt/photos/dir1 \
-      --also /mnt/photos/dir2
+   cdb --db ${DB} addh < ${DB}.new2
 
-* explicitly acknowledge a deletion by removing observations of it::
+After reviewing the files to be pruned in ``${DB}.prune``, it can be executed::
 
-    $ cksdb /mnt/photos/.cksdb rm /mnt/photos/filename
-
-* indicate that the last observed content of ``foo.jpg`` is superseded by the
-  last observed content of ``foo.raw``::
-
-    $ cksdb /mnt/photos/.cksdb supersede /mnt/photos/foo.jpg /mnt/photos/foo.raw
-
-* import files from outside the library, say, in ``/mnt/sdcard``, skipping
-  duplicate and superseded files and removing all examined files (that is,
-  imported, duplicate, and superseded; ``--harvest``)::
-
-    $ cksdb /mnt/photos/.cksdb import --harvest /mnt/photos/newdir /mnt/sdcard
-
-* import from another database::
-
-    $ cksdb /mnt/photos/.cksdb import-db /mnt/oldphotos/.cksdb
-
-Cross-Database Operations
-=========================
-
-Compute violations of set-theoretic relationships between a database and the
-union of one or more other databases::
-
-    $ cksdb /mnt/photos/.cksdb is-subset /mnt/backups/photos/.cksdb
-    $ cksdb /mnt/photos/.cksdb is-superset /mnt/backups/photos/.cksdb
+   sh < ${DB}.prune

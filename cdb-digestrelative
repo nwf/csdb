@@ -1,4 +1,5 @@
-#!/usr/bin/env lua5.3
+#!/usr/bin/env luajit
+-- Also runs under lua5.3
 
 -- Read a stream of GNU digest filenames and concat them together, adjusting
 -- paths by prefixing the relative path of each digest file.
