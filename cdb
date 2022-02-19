@@ -11,7 +11,6 @@ local argparse  = require "argparse"
 local dbi       = require "DBI"
 local plapp     = require "pl.app"
 local plpath    = require "pl.path"
-local plstringx = require "pl.stringx"
 local pltablex  = require "pl.tablex"
 local pltext    = require "pl.text"
 
@@ -22,10 +21,10 @@ local cdblib    = require "cdblib"
 --------------------------------------------------- SQL utilities {{{
 
 local function sql_do(dbh, sql, ...)
-  local sth, err = dbh:prepare(sql)
-  if not sth then return false, err end
-  local ok, err = sth:execute(...)
-  if not ok then return false, err end
+  local sth, serr = dbh:prepare(sql)
+  if not sth then return false, serr end
+  local ok, eerr = sth:execute(...)
+  if not ok then return false, eerr end
   return sth
 end
 
@@ -103,7 +102,7 @@ local function mk_progress_pair(fn)
       local o = n
       i = i or 1
       n = n + i
-      if (n % 256) + i >= 256 then
+      if (o % 256) + i >= 256 then
         f:write(("Processed %d records\r"):format(n)); f:flush()
       end
     end
@@ -306,15 +305,15 @@ mksubcmd(function(c)
     args.relative and function(p) plpath.relpath(p, args.relative) end
                   or plpath.basename
 
-  function explain_found_hash(h, p)
-    local res = sql_run_one_x(sth_path_by_hash, h)
-    if res then
+  local function explain_found_hash(h, p)
+    local hres = sql_run_one_x(sth_path_by_hash, h)
+    if hres then
       return table.concat({ "Import hash ", h, " from path ", p,
-        " already in database at ", human_escape(res[1])})
+        " already in database at ", human_escape(hres[1])})
     end
 
-    local res = sql_run_one_x(sth_superseder_by_hash, h)
-    if res then
+    local sres = sql_run_one_x(sth_superseder_by_hash, h)
+    if sres then
       return table.concat({"Import hash ", h, " from path ", p,
         " already in database but superseded"})
     end
@@ -365,7 +364,7 @@ mksubcmd(function(c)
    :description("Initialize the database")
   argp_group("Administrative", c)
  end,
- function(args, dbh)
+ function(_, dbh)
   local function ddo(sql) assert(dbi.Do(dbh, sql)) end
   ddo([[PRAGMA auto_vacuum="incremental";]])
   ddo([[CREATE TABLE IF NOT EXISTS paths (
@@ -408,8 +407,8 @@ mksubcmd(function(c)
    :description("Report statistics")
   argp_group("Administrative", c)
  end,
- function(args, dbh)
-   local nhash, npath, nobsv
+ function(_, dbh)
+   local nhash, npath, nobsv, nsupr
    nhash = assert(sql_do(dbh, "SELECT COUNT(*) FROM hashes"    )):fetch()[1]
    npath = assert(sql_do(dbh, "SELECT COUNT(*) FROM paths"     )):fetch()[1]
    nobsv = assert(sql_do(dbh, "SELECT COUNT(*) FROM path_hash" )):fetch()[1]
@@ -427,7 +426,7 @@ mksubcmd(function(c)
    :description("Generate SQL to prune identifiers not used by observations")
   argp_group("Administrative", c)
  end,
- function(args, dbh)
+ function(_, dbh)
   local sth_paths_dead = assert(sql_do(dbh,
     [[SELECT pathid, path FROM paths
       WHERE pathid NOT IN (SELECT pathid FROM path_hash)]]))
@@ -454,7 +453,7 @@ mksubcmd(function(c)
    :description("ANALYZE and VACUUM the database")
   argp_group("Administrative", c)
  end,
- function(args, dbh)
+ function(_, dbh)
   local function ddo(sql) assert(dbi.Do(dbh, sql)) end
   ddo("ANALYZE")
   dbh:commit()
@@ -520,7 +519,7 @@ mksubcmd(function(c)
    :description("Perform sanity checks on superseders")
   argp_group("Administrative", c)
  end,
- function(args, dbh)
+ function(_, dbh)
    local sth_path_find_by_hash = assert(sql_mk_pathid_find_by_hash(dbh))
    local sth_superseder_by_hash =
      assert(sql_mk_superseder_find_hash_by_hash(dbh))
@@ -534,10 +533,10 @@ mksubcmd(function(c)
    for srow in sth:rows(true) do
      -- Ensure that each new-side superseder is either itself superseded or
      -- has a path in the database
-     local res = sql_run_one_x(sth_path_find_by_hash, srow.newhash)
-     if res == nil then
-       local res = sql_run_one_x(sth_superseder_by_hash, srow.newhash)
-       if res == nil then
+     local pres = sql_run_one_x(sth_path_find_by_hash, srow.newhash)
+     if pres == nil then
+       local sres = sql_run_one_x(sth_superseder_by_hash, srow.newhash)
+       if sres == nil then
          print("Superseder record without replacement:")
          print(" note:", srow.note)
          print(" old:" , srow.oldhash)
@@ -644,7 +643,7 @@ mksubcmd(function(c)
    :description("Find conflicting measurements of paths")
   argp_group("Query", c)
  end,
- function(args, dbh)
+ function(_, dbh)
   local sth = assert(sql_do(dbh,
     [[SELECT path, hash, pairid, timestamp FROM v_path_hash NATURAL JOIN
        (SELECT pathid, pcount FROM
@@ -653,8 +652,8 @@ mksubcmd(function(c)
   local lastpath = nil
   for row in sth:rows() do
     local p, h, pairid, ts = table.unpack(row)
-    if p ~= lastp then
-      lastp = p
+    if p ~= lastpath then
+      lastpath = p
       print("PATH", (cdblib.escape_gnu_digest(p)))
     end
     print((" observed hash %s with id %d at %s"):format(h, pairid, ts))
@@ -700,7 +699,7 @@ mksubcmd(function(c)
   local renderer = renderer_for(args)
 
   local mkiter = cdblib.iter_lines_or_nul(args.inul)
-  local mkiter = args.in_paths
+  mkiter = args.in_paths
    and cdblib.iter_just_paths_as_digest(args.in_paths, mkiter)
     or cdblib.iter_gnu_digest_stderr(mkiter)
 
@@ -725,7 +724,6 @@ mksubcmd(function(c)
  end,
  function(args, dbh)
   local sth_path_find = assert(sql_mk_pathid_find(dbh))
-  local sth_hash_find = assert(sql_mk_hashid_find(dbh))
   local sth_path_find_by_hash = assert(sql_mk_pathid_find_by_hash(dbh))
   local sth_obsv_find_by_pathid_hash =
     assert(dbh:prepare([[SELECT pairid
@@ -803,7 +801,6 @@ mksubcmd(function(c)
  function(args, dbh)
   local renderer = renderer_for(args)
   local header = args.no_headers and function() end or print
-  local function header(x) if not args.no_headers then print(x) end end
   dbi.Do(dbh, "ATTACH DATABASE ? AS other", args.db2)
 
   if pltablex.find({"path", "both", "all"}, args.flavor) then
@@ -988,7 +985,7 @@ mksubcmd(function(c)
   local mkiter = #args.path ~= 0
     and cdblib.iter_table(args.path)
     or  cdblib.iter_lines_or_nul(args.inul)
-   
+
   for p in mkiter() do
    if args.verbose then print("Trying mv:", p) end
 

@@ -122,7 +122,7 @@ end
 
 function _M.iter_just_2nd(baseiter)
   return function() return coroutine.wrap(function()
-    for k, v in baseiter() do coroutine.yield(v) end end)
+    for _, v in baseiter() do coroutine.yield(v) end end)
   end
 end
 
