@@ -90,13 +90,6 @@ end
 ----------------------------------------------------------------- }}}
 ----------------------------------------------- Command utilities {{{
 
-local function iter_gnu_digest_stderr(baseiter)
-  local errcb = function(line)
-      io.stderr:write("Bad line: ", line, "\n")
-      return true -- continue iteration
-    end
-  return cdblib.iter_gnu_digest(errcb, baseiter)
-end
 
 local function mk_progress_pair(fn)
   local progeach = function() end
@@ -272,8 +265,8 @@ mksubcmd(function(c)
     end
   end
 
-
-  local mkiter = iter_gnu_digest_stderr(cdblib.iter_lines_or_nul(args.inul))
+  local mkiter = cdblib.iter_gnu_digest_stderr(
+    cdblib.iter_lines_or_nul(args.inul))
   local sth_hash_find = assert(sql_mk_hashid_find(dbh))
   local sth_path_by_hash = assert(sql_mk_pathid_find_by_hash(dbh))
   local sth_superseder_by_hash = assert(sql_mk_superseder_find_by_hash(dbh))
@@ -656,7 +649,7 @@ mksubcmd(function(c)
   local rex = (args.predicate == "in")
   local renderer = renderer_for(args)
   local sth = assert(sql_mk_hashid_find(dbh))
-  for h, p in iter_gnu_digest_stderr(cdblib.iter_lines())() do
+  for h, p in cdblib.iter_gnu_digest_stderr(cdblib.iter_lines())() do
    local res = sql_run_one_x(sth, h)
    if (res ~= nil) == rex then io.write(renderer(h, p)) end
   end
@@ -683,7 +676,7 @@ mksubcmd(function(c)
   local mkiter = cdblib.iter_lines_or_nul(args.inul)
   local mkiter = args.in_paths
    and cdblib.iter_just_paths_as_digest(args.in_paths, mkiter)
-    or iter_gnu_digest_stderr(mkiter)
+    or cdblib.iter_gnu_digest_stderr(mkiter)
 
   local sth = sql_mk_pathid_find(dbh)
   for h, p in mkiter() do
@@ -716,7 +709,8 @@ mksubcmd(function(c)
       FROM path_hash NATURAL JOIN hashes WHERE pathid = ? AND hash != ?]]))
 
   local fail = 0
-  for h, p in iter_gnu_digest_stderr(cdblib.iter_lines_or_nul(args.inul))() do
+  for h, p in cdblib.iter_gnu_digest_stderr(
+                cdblib.iter_lines_or_nul(args.inul))() do
     p = plpath.normpath(plpath.join(args.graft, p))
     local pid = sql_run_one_x(sth_path_find, p)
     if pid == nil then
@@ -904,7 +898,7 @@ mksubcmd(function(c)
 
   local progeach, progfin = mk_progress_pair(args.progress)
 
-  for h, p in iter_gnu_digest_stderr(mkiter)() do
+  for h, p in cdblib.iter_gnu_digest_stderr(mkiter)() do
     local docommit = false
     p = plpath.normpath(plpath.join(args.graft, p))
     local pid = sql_run_one_x(sth_path_upsert, p)[1]

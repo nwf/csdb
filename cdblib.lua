@@ -29,7 +29,7 @@ _M.unescape_gnu_digest = unescape_gnu_digest
 -- Iterate a GNU digest tool stream, canonicalizing file names into their
 -- unescaped form if necessary.  `errcb` is invoked for lines that do not match
 -- and may return `false` to stop iteration.
-function _M.iter_gnu_digest(errcb, baseiter)
+local function iter_gnu_digest(errcb, baseiter)
   return function() return coroutine.wrap(function()
     for line in baseiter() do
       if line == nil then return nil end
@@ -42,6 +42,16 @@ function _M.iter_gnu_digest(errcb, baseiter)
     end
   end) end
 end
+_M.iter_gnu_digest = iter_gnu_digest
+
+function _M.iter_gnu_digest_stderr(baseiter)
+  local errcb = function(line)
+      io.stderr:write("Bad line: ", line, "\n")
+      return true -- continue iteration
+    end
+  return iter_gnu_digest(errcb, baseiter)
+end
+
 
 function _M.iter_just_paths_as_digest(dummyhash, baseiter)
   return function() return coroutine.wrap(function()
