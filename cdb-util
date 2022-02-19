@@ -10,6 +10,9 @@ local plpath    = require "pl.path"
 plapp.require_here()
 local cdblib    = require "cdblib"
 
+----------------------------------------------------------------- }}}
+---------------------------------------------- Argparse utilities {{{
+
 local function argparse_flag_nul(c)
   return c:flag("--nul -0")
    :description("NUL-terminate output records")

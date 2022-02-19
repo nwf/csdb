@@ -182,6 +182,7 @@ end
 -------------------- Argparse Globals and Command Grouping part 1 {{{
 
 local argp = argparse("cdb", "checksum database tool")
+-- TODO: argp:add_help_command()
 
 -- global options must come before commands, and must be options rather than
 -- arguments if we want --help to do the right thing, sadly.

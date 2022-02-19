@@ -192,8 +192,8 @@ Superseder records can also be added from ``stdin`` using ``addsuperhash`` (or
 
   old-digest new-digest notes
 
-The ``notes`` field extends to the end of the line; if newlines are desired in
-the recorded notes, use ``--inul`` and separate records by NUL bytes.
+The ``notes`` field extends to the end of the record; if newlines are desired in
+the recorded notes, use ``--inul`` (``-1``) and separate records by NUL bytes.
 
 Ingest
 ======
