@@ -234,8 +234,10 @@ mksubcmd(function(c)
    :description("Record new files in the digest log as they are")
   c:flag("--verbose")
    :description("Be chatty on stderr about the generated comand stream")
-  c:flag("--extended-escapes")
-   :description("Write control characters in file names with $'...' escapes")
+  c:option("--escape")
+   -- TODO: :choices("posix", "extended", "human")
+   :default("posix")
+   :description("Control how special characters in paths are escaped")
   c:flag("--no-human-escape")
    :description("Avoid trying to be kind to humans with paths in the logs")
   argparse_flag_inul(c)
@@ -257,9 +259,26 @@ mksubcmd(function(c)
     end
   end
 
-  local shell_escape =
-    args.extended_escapes and cdblib.extended_shell_escape
-                          or  cdblib.posix_shell_escape
+  local human_escape = cdblib.extended_shell_escape
+  if not args.no_human_escape then
+    local ok, rexlib = pcall(require, "rex_posix")
+    if not ok then
+      io.stderr:write("Unable to load locale-aware regex library")
+    else
+      os.setlocale("")
+      human_escape = cdblib.mk_human_shell_escape(rexlib)
+    end
+  end
+
+  local shell_escape
+  do
+    local h = args.escape
+        if h == "posix"    then shell_escape = cdblib.posix_shell_escape
+    elseif h == "extended" then shell_escape = cdblib.extended_shell_escape
+    elseif h == "human"    then shell_escape = human_escape
+    else error("Bad escape function selector " .. h)
+    end
+  end
 
   local function log_prune() end
   if args.prune then
@@ -280,17 +299,6 @@ mksubcmd(function(c)
   local sth_hash_find = assert(sql_mk_hashid_find(dbh))
   local sth_path_by_hash = assert(sql_mk_pathid_find_by_hash(dbh))
   local sth_superseder_by_hash = assert(sql_mk_superseder_find_by_hash(dbh))
-
-  local human_escape = cdblib.extended_shell_escape
-  if not args.no_human_escape then
-    local ok, rexlib = pcall(require, "rex_posix")
-    if not ok then
-      io.stderr:write("Unable to load locale-aware regex library")
-    else
-      os.setlocale("")
-      human_escape = cdblib.mk_human_shell_escape(rexlib)
-    end
-  end
 
   local path_crush =
     args.relative and function(p) plpath.relpath(p, args.relative) end

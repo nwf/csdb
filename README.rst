@@ -222,8 +222,8 @@ recompute digests.
 its mechanism is somewhat crude and not always great for human consumption).
 However, POSIX shells are willing to forgive control characters in quoted
 strings while humans and terminals are more likely to make a mess of things.
-The ``--extended-escapes`` flag will cause ``ingest`` to be more aggressive
-about quoting such characters, making them overtly visible.
+The ``--escape {posix,extended,human}`` option will change how ``ingest`` quotes
+such characters.
 
 .. _injest_reflex:
 
