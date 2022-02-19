@@ -235,6 +235,8 @@ mksubcmd(function(c)
    :description("Be chatty on stderr about the generated comand stream")
   c:flag("--extended-escapes")
    :description("Write control characters in file names with $'...' escapes")
+  c:flag("--no-human-escape")
+   :description("Avoid trying to be kind to humans with paths in the logs")
   argparse_flag_inul(c)
   argparse_flag_nul(c)
   c:mutex(inplace, mv)
@@ -271,7 +273,16 @@ mksubcmd(function(c)
   local shell_escape =
     args.extended_escapes and cdblib.extended_shell_escape
                           or  cdblib.posix_shell_escape
-  local human_escape = cdblib.human_shell_escape
+  local human_escape = cdblib.extended_shell_escape
+  if not args.no_human_escape then
+    local ok, rexlib = pcall(require, "rex_posix")
+    if not ok then
+      io.stderr:write("Unable to load locale-aware regex library")
+    else
+      os.setlocale("")
+      human_escape = cdblib.mk_human_shell_escape(rexlib)
+    end
+  end
 
   local path_crush =
     args.relative and function(p) plpath.relpath(p, args.relative) end

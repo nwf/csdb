@@ -132,27 +132,27 @@ diff -u - <(${LUA} ./cdb --db ${DB1} mappath <<<"ordinary") <<<"1  ordinary"
 cat >${LOG1} <<HERE
 5  new
 \\6  new\\\\esc
-9  twinned copy
+9  twinned copy 🎵
 4  ti'cky copy
 4  ti'cky copy with \$extra
 HERE
 ${LUA} ./cdb --db ${DB1} ingest --target x --prune-log=${LOG4} --verbose <${LOG1} >${LOG2} 2>${LOG3}
 # Import commands on stdout
 diff -u - ${LOG2} <<HERE
-cp 'new' 'x/new'
-cp 'new\\esc' 'x/new\\esc'
+cp -- 'new' 'x/new'
+cp -- 'new\\esc' 'x/new\\esc'
 HERE
 # Log on stderr
 diff -u - ${LOG3} <<HERE
 Import 'new' to 'x/new'
 Import 'new\\esc' to 'x/new\\esc'
-Import hash 9 from path 'twinned copy' already in database at 'twinned'
+Import hash 9 from path 'twinned copy 🎵' already in database at 'twinned'
 Import hash 4 from path "ti'cky copy" already in database at "ti'cky"
 Import hash 4 from path 'ti'"'"'cky copy with \$extra' already in database at "ti'cky"
 HERE
 # Prunelog
 diff -u - <(tr '\000' '\n' <${LOG4}) <<HERE
-twinned copy
+twinned copy 🎵
 ti'cky copy
 ti'cky copy with \$extra
 HERE

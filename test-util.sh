@@ -40,5 +40,53 @@ HERE
 1  /b
 HERE
 
+# Test the various shell escapes
+ARB=$(echo "a\rb")
+cat >${LOG1} <<HERE
+a	b
+a\$b
+${ARB}
+x'
+🎵
+🎶"
+α
+α'
+HERE
+
+${LUA} ./cdb-util escape posix <${LOG1} | diff -u /dev/fd/3 - 3<<HERE
+'a	b'
+'a\$b'
+'${ARB}'
+'x'"'"''
+'🎵'
+'🎶"'
+'α'
+'α'"'"''
+HERE
+
+${LUA} ./cdb-util escape extended <${LOG1} | diff -u /dev/fd/3 - 3<<HERE
+'a'\$'\\x09''b'
+'a\$b'
+'a'\$'\\x0d''b'
+'x'"'"''
+''\$'\\xf0'''\$'\\x9f'''\$'\\x8e'''\$'\\xb5'''
+''\$'\\xf0'''\$'\\x9f'''\$'\\x8e'''\$'\\xb6''"'
+''\$'\\xce'''\$'\\xb1'''
+''\$'\\xce'''\$'\\xb1'''"'"''
+HERE
+
+${LUA} ./cdb-util escape human <${LOG1} | diff -u /dev/fd/3 - 3<<HERE
+'a'$'\\x09''b'
+'a\$b'
+'a'\$'\\x0d''b'
+"x'"
+'🎵'
+'🎶"'
+'α'
+"α'"
+HERE
+
+
+
 set +x
 echo "OK"

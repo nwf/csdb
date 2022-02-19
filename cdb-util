@@ -87,6 +87,41 @@ mksubcmd(function(c)
 )
 
 ----------------------------------------------------------------- }}}
+--------------------------------------------- Command: escape esc {{{
+
+mksubcmd(function(c)
+  c:name("escape esc")
+   :description("Escape input records, usually for shells")
+  c:argument("how"):default("posix")
+   :description("How to escape lines")
+   -- TODO: :choices("digest", "posix", "extended", "human")
+  argparse_flag_nul(c)
+  argparse_flag_inul(c)
+ end,
+ function(args)
+  local eol = args.nul and '\0' or '\n'
+
+  local f
+  do
+    local h = args.how
+    if     h == "digest"   then f = cdblib.escape_gnu_digest
+    elseif h == "posix"    then f = cdblib.posix_shell_escape
+    elseif h == "extended" then f = cdblib.extended_shell_escape
+    elseif h == "human"    then
+      os.setlocale("")
+      local rexlib = require("rex_posix")
+      f = cdblib.mk_human_shell_escape(rexlib)
+    else error("Bad escape function selector " .. h)
+    end
+  end
+
+  for l in cdblib.iter_lines_or_nul(args.inul)() do
+    io.write(f(l), eol)
+  end
+ end
+)
+
+----------------------------------------------------------------- }}}
 --------------------------------------------- Top-level executive {{{
 
 local args = argp:parse()

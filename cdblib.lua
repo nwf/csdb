@@ -190,37 +190,51 @@ end
 ----------------------------------------------------------------- }}}
 ------------------------------------------- Path escape utilities {{{
 
+-- This appears to be pretty safe, even in the presence of non-ASCII bytes.
+-- That's kind of great and we will use this by default whenever we generate
+-- text for a shell.
 function _M.posix_shell_escape(str)
   return "'" .. str:gsub("'", "'\"'\"'") .. "'"
 end
 
 -- While POSIX shells understand control characters inside single quotes, they
 -- are unfriendly to read as such.  Some shells have a $'...' escape that can
--- process things like \t and \xXX.  This uses that instead.  Perhaps we should
--- have a version that actually uses \t, but, honestly, if you're hitting this
--- case you deserve what you get.
+-- process things like \t and \xXX.  This uses that instead, though always in
+-- the \xXX form.
 local function extended_shell_escape(str)
   return "'" ..
-    str:gsub("['%c]", function(c)
-      return c == "'" and "'\"'\"'" or ("'$'\\x%02x''"):format(c:byte())
+    str:gsub("['%G]", function(c)
+      return c == " " and " "
+          or c == "'" and "'\"'\"'"
+          or ("'$'\\x%02x''"):format(c:byte())
     end) .. "'"
 end
 _M.extended_shell_escape = extended_shell_escape
 
-function _M.human_shell_escape(str)
-  if not str:find("[%c]") then
-    -- no control characters, and...
-    if not str:find("'") then
-      -- no single quotes, so simple enough to just single-quote the thing
-      return "'" .. str .. "'"
-    elseif not str:find('["$`\\]') then
-      -- single quote but no double quote, dollar, backtick, or backslash
-      return '"' .. str .. '"'
-    end
-  end
+-- Formatting for humans is... more exciting, as we expect these to end up on
+-- a screen with no intermediate processing.  Astoundingly more subtle.  We
+-- use posix rexlib.
+function _M.mk_human_shell_escape(rexlib)
+  local nonglyph = rexlib.new("[^[:graph:] ]", rexlib.REG_EXTENDED)
+  local nonshell = rexlib.new("[^-%',._+:@/ [:alnum:]]", rexlib.REG_EXTENDED)
 
-  -- If none of the special cases apply, just do the full thing
-  return extended_shell_escape(str)
+  return function(str)
+    if not nonglyph:find(str) then
+      -- no control characters, and...
+      if not str:find("'") then
+        -- no single quotes, so simple enough to just single-quote the thing
+        return "'" .. str .. "'"
+      elseif not nonshell:find(str) then
+        -- single quote but otherwise all double-quoted shell-safe characters
+        -- (notably, no double quote, dollar, backtick, or backslash, but also
+        -- no non-ASCII)
+        return '"' .. str .. '"'
+      end
+    end
+
+    -- If none of the special cases apply, be overzealous but hopefully safe
+    return extended_shell_escape(str)
+  end
 end
 
 ----------------------------------------------------------------- }}}
