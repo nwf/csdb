@@ -2,6 +2,8 @@
 -- Should also be executable under lua5.3, since we sit in the intersection of
 -- the two languages and our dependencies do too or are available in both
 -- environments.
+--
+-- SPDX-License-Identifier: AGPL-3.0-or-later
 
 --------------------------------------------------------- Imports {{{
 
