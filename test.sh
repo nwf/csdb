@@ -158,8 +158,8 @@ ti'cky copy with \$extra
 HERE
 
 diff -u - <(${LUA} ./cdb --db ${DB1} ingest --move --target x --digest-log ${LOG2} <${LOG1}) <<HERE
-mv 'new' 'x/new'
-mv 'new\\esc' 'x/new\\esc'
+mv -- 'new' 'x/new'
+mv -- 'new\\esc' 'x/new\\esc'
 HERE
 diff -u - ${LOG2} <<HERE
 5  x/new
@@ -183,9 +183,9 @@ HERE
 
 # And with some rude characters in the path name
 diff -u - <(${LUA} ./cdb --db ${DB1} ingest --target x <<<'5  rude'$'\r''new') \
-          <<<"cp 'rude"$'\r'"new' 'x/rude"$'\r'"new'"
+          <<<"cp -- 'rude"$'\r'"new' 'x/rude"$'\r'"new'"
 diff -u - <(${LUA} ./cdb --db ${DB1} ingest --target x --extended-escapes <<<'5  rude'$'\t''new') \
-          <<<"cp 'rude'\$'\\x09''new' 'x/rude'\$'\\x09''new'"
+          <<<"cp -- 'rude'\$'\\x09''new' 'x/rude'\$'\\x09''new'"
 diff -u - <(${LUA} ./cdb --db ${DB1} ingest --target x --verbose 2>&1 <<<'9  rude'$'\r''copy') \
           <<<"Import hash 9 from path 'rude'$'\\x0d''copy' already in database at 'twinned'"
 

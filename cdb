@@ -315,7 +315,7 @@ mksubcmd(function(c)
                         " to ", human_escape(q), "\n")
       end
       io.write(args.move and "mv" or "cp",
-        " ", shell_escape(p), " ", shell_escape(q), eol)
+        " -- ", shell_escape(p), " ", shell_escape(q), eol)
       log_new_hash(h, q)
     elseif args.inplace then
       io.stderr:write("Adding in place ", human_escape(p), "\n")
