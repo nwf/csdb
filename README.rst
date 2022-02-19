@@ -237,17 +237,22 @@ presence elsewhere in the database.  We can enumerate files not tracked using
 above::
 
    find ${DIR} -type f -print0 | \
-     cdb --db ${DB} filterpath --in-path --predicate=out -0 -1 --format '$u$z' > ${DB}.new-files0
-   xargs -0 sha512sum > ${DB}.new < ${DB}.new-files0
+   cdb --db ${DB} filterpath --in-path --predicate=out -0 -1 --format '$u$z' | \
+   xargs -0 sha512sum > ${DB}.new
 
 We can then prepare to prune duplicates and add unique files::
 
-   cdb --db ${DB} ingest -1 --prune --inplace --digest-log ${DB}.new2 < ${DB}.new > ${DB}.prune
+   cdb --db ${DB} ingest --prune --inplace --digest-log ${DB}.new2 < ${DB}.new > ${DB}.prune
 
 Add new files to the database with::
 
    cdb --db ${DB} addh < ${DB}.new2
 
-After reviewing the files to be pruned in ``${DB}.prune``, it can be executed::
+Inspect the pruning commands to be run, and then execute them with::
 
    sh < ${DB}.prune
+
+(If you have, or might have, unusual path names, you may be better served with
+``--prune-log`` rather than ``--prune``.  The resulting, ``NUL``-terminated list
+of files can be inspected with ``cdb-util escape human -0`` and run with ``xargs
+-0 -- rm --``.)

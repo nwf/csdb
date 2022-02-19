@@ -131,12 +131,12 @@ diff -u - <(${LUA} ./cdb --db ${DB1} mappath <<<"ordinary") <<<"1  ordinary"
 # Test 'ingeset'
 cat >${LOG1} <<HERE
 5  new
-\\6  new\\\\esc
 9  twinned copy 🎵
+\\6  new\\\\esc
 4  ti'cky copy
 4  ti'cky copy with \$extra
 HERE
-${LUA} ./cdb --db ${DB1} ingest --target x --prune-log=${LOG4} --verbose <${LOG1} >${LOG2} 2>${LOG3}
+${LUA} ./cdb --db ${DB1} ingest --target x --prune=${LOG4} --verbose <${LOG1} >${LOG2} 2>${LOG3}
 # Import commands on stdout
 diff -u - ${LOG2} <<HERE
 cp -- 'new' 'x/new'
@@ -145,8 +145,8 @@ HERE
 # Log on stderr
 diff -u - ${LOG3} <<HERE
 Import 'new' to 'x/new'
-Import 'new\\esc' to 'x/new\\esc'
 Import hash 9 from path 'twinned copy 🎵' already in database at 'twinned'
+Import 'new\\esc' to 'x/new\\esc'
 Import hash 4 from path "ti'cky copy" already in database at "ti'cky"
 Import hash 4 from path 'ti'"'"'cky copy with \$extra' already in database at "ti'cky"
 HERE
@@ -157,6 +157,18 @@ ti'cky copy
 ti'cky copy with \$extra
 HERE
 
+# Again, with intermixed pruning commands
+${LUA} ./cdb --db ${DB1} ingest --target x --prune <${LOG1} >${LOG2} 2>${LOG3}
+diff -u - ${LOG2} <<HERE
+cp -- 'new' 'x/new'
+rm -- 'twinned copy 🎵'
+cp -- 'new\\esc' 'x/new\\esc'
+rm -- 'ti'"'"'cky copy'
+rm -- 'ti'"'"'cky copy with \$extra'
+HERE
+diff -u /dev/null ${LOG3}
+
+# With move
 diff -u - <(${LUA} ./cdb --db ${DB1} ingest --move --target x --digest-log ${LOG2} <${LOG1}) <<HERE
 mv -- 'new' 'x/new'
 mv -- 'new\\esc' 'x/new\\esc'
@@ -169,7 +181,7 @@ HERE
 diff -u /dev/null <(${LUA} ./cdb --db ${DB1} gc)
 
 # And without actually doing the import
-${LUA} ./cdb --db ${DB1} ingest --prune-log=${LOG3} --verbose >${LOG1} 2>${LOG2} \
+${LUA} ./cdb --db ${DB1} ingest --prune=${LOG3} --verbose >${LOG1} 2>${LOG2} \
   <<<'5  new'$'\n''4  copy'
 # No output stdout
 diff -u /dev/null ${LOG1}
@@ -291,7 +303,7 @@ diff -u /dev/null <(${LUA} ./cdb --db ${DB1} maph 11)
 diff -u /dev/null <(${LUA} ./cdb --db ${DB1} gc)
 
 # Test ingest with supers
-${LUA} ./cdb --db ${DB1} ingest --target x --prune-log=${LOG3} --digest-log=${LOG4} --verbose \
+${LUA} ./cdb --db ${DB1} ingest --target x --prune=${LOG3} --digest-log=${LOG4} --verbose \
   >${LOG1} 2>${LOG2} <<HERE
 0  won't fix super
 11  pre-ordinary again

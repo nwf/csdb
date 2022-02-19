@@ -223,9 +223,10 @@ mksubcmd(function(c)
    :description("Don't crush targets to basename; trim given prefix instead")
   local mv = c:flag("--move")
    :description("Issue move, not copy, commands for new files")
-  c:option("--prune-log")
-   :argname("file")
-   :description("Log of files with colliding digests; NUL-separated")
+  c:option("--prune")
+   :argname("LOG")
+   :default(""):defmode("a")
+   :description("Generate rm for, or log w/ NULs, files with colliding digests")
   c:option("--digest-log")
    :argname("file")
    :description("Write novel digest records to the indicated file")
@@ -256,11 +257,21 @@ mksubcmd(function(c)
     end
   end
 
+  local shell_escape =
+    args.extended_escapes and cdblib.extended_shell_escape
+                          or  cdblib.posix_shell_escape
+
   local function log_prune() end
-  if args.prune_log then
-    local prunef = assert(io.open(args.prune_log, "wb"))
-    function log_prune(p)
-      return prunef:write(p, "\0")
+  if args.prune then
+    if args.prune == "" then
+      function log_prune(p)
+        return io.write("rm -- ", shell_escape(p), eol)
+      end
+    else
+      local prunef = assert(io.open(args.prune, "wb"))
+      function log_prune(p)
+        return prunef:write(p, "\0")
+      end
     end
   end
 
@@ -270,9 +281,6 @@ mksubcmd(function(c)
   local sth_path_by_hash = assert(sql_mk_pathid_find_by_hash(dbh))
   local sth_superseder_by_hash = assert(sql_mk_superseder_find_by_hash(dbh))
 
-  local shell_escape =
-    args.extended_escapes and cdblib.extended_shell_escape
-                          or  cdblib.posix_shell_escape
   local human_escape = cdblib.extended_shell_escape
   if not args.no_human_escape then
     local ok, rexlib = pcall(require, "rex_posix")
