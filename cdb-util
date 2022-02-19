@@ -1,0 +1,97 @@
+#!/usr/bin/env luajit
+
+--------------------------------------------------------- Imports {{{
+
+local argparse  = require "argparse"
+local plapp     = require "pl.app"
+local plpath    = require "pl.path"
+
+plapp.require_here()
+local cdblib    = require "cdblib"
+
+local function argparse_flag_nul(c)
+  return c:flag("--nul -0")
+   :description("NUL-terminate output records")
+   :default(false)
+end
+
+local function argparse_flag_inul(c)
+  return c:flag("--inul -1")
+          :description("Input is NUL-delimited, not newline")
+          :default(false)
+end
+
+local argp = argparse("cdb-util", "CDB-adjacent Utility Multitool")
+local function mksubcmd(cmdinit, body)
+  local cmd = argp:command()
+  cmd:action(function(args, name)
+               args._command = name
+               args._command_fn = body
+             end)
+  cmdinit(cmd)
+  return cmd
+end
+
+----------------------------------------------------------------- }}}
+------------------------------------------- Digest stream helpers {{{
+
+local function path_prefix_digest_stream(pfx, iter, sink)
+  for h, p in iter() do sink(h, plpath.normpath(plpath.join(pfx, p))) end
+end
+
+local function path_prefix_digest_stream_stdout(inul, onul, pfx, f)
+  local rend = cdblib.renderer_for(onul, false,
+        cdblib.mk_default_render_template())
+  return path_prefix_digest_stream(pfx,
+    cdblib.iter_gnu_digest_stderr(cdblib.iter_lines_or_nul(inul, f)),
+    function(...) io.write(rend(...)) end)
+end
+
+----------------------------------------------------------------- }}}
+------------------------------------- Command: digest-prefix dpre {{{
+
+mksubcmd(function(c)
+  c:name("digest-prefix dpre")
+   :description("Relativize a digest stream")
+  c:argument("prefix")
+   :description("New path prefix")
+  argparse_flag_nul(c)
+  argparse_flag_inul(c)
+ end,
+ function(args)
+  return path_prefix_digest_stream_stdout(
+    args.inul, args.nul, args.prefix, io.stdin)
+ end
+)
+
+----------------------------------------------------------------- }}}
+--------------------------------- Command: digest-relativize drel {{{
+
+mksubcmd(function(c)
+  c:name("digest-relativize drel")
+   :description("Relativize and concatenate many digest streams")
+  argparse_flag_nul(c)
+  argparse_flag_inul(c)
+  argp:flag("--fnul -2")
+    :description("Input files are NUL terminated rather than newline")
+    :default(false)
+ end,
+ function(args)
+  for fileline in cdblib.iter_lines_or_nul(args.inul)() do
+   local prefix = plpath.dirname(fileline)
+   local f = assert(io.open(fileline, "r"))
+   path_prefix_digest_stream_stdout(args.fnul, args.nul, prefix, f)
+   io.close(f)
+  end
+ end
+)
+
+----------------------------------------------------------------- }}}
+--------------------------------------------- Top-level executive {{{
+
+local args = argp:parse()
+-- io.stderr:write((require "pl.pretty").write(args), "\n")
+
+args:_command_fn()
+
+----------------------------------------------------------------- }}}

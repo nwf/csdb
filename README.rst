@@ -54,9 +54,9 @@ Or, for all files under a path::
 
 If we have a pile of digest files already, each of which contains digests of
 paths relative to its location, we can generate a database, ``${DB2}`` from them
-with the assistance of the ``cdb-digestrelative`` tool::
+with the assistance of the ``cdb-util digest-relativize`` tool::
 
-  find ${DIR} -type f -name SHA512SUMS -print0 | cdb-digestrelative --inul | cdb --db ${DB} addh
+  find ${DIR} -type f -name SHA512SUMS -print0 | cdb-util drel --inul | cdb --db ${DB} addh
 
 Revalidate A Path Observation
 =============================
