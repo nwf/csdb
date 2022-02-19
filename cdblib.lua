@@ -183,6 +183,10 @@ function _M.renderer_for(nul, unescape, template)
   end
 end
 
+function _M.mk_default_render_template()
+  return (require "pl.text").Template("$e$h  $f$z")
+end
+
 ----------------------------------------------------------------- }}}
 ------------------------------------------- Path escape utilities {{{
 

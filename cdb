@@ -141,10 +141,6 @@ local function argparse_flag_nul(c)
    :default(false)
 end
 
-local function mk_default_render_template()
-  return pltext.Template("$e$h  $f$z")
-end
-
 local function argparse_for_render(c)
   c:flag("--unescape")
    :description("Do not escape filenames ($f is $u); likely use --nul, too")
@@ -160,7 +156,7 @@ end
 local function renderer_for(args)
   return cdblib.renderer_for(args.nul, args.unescape,
     args.format and pltext.Template(args.format)
-                 or mk_default_render_template())
+                 or cdblib.mk_default_render_template())
 end
 
 local function argparse_flag_inul(c)
@@ -251,7 +247,8 @@ mksubcmd(function(c)
   local function log_new_hash() end
   if args.digest_log then
     local logf = assert(io.open(args.digest_log, "wb"))
-    local rend = cdblib.renderer_for(false, false, mk_default_render_template())
+    local rend = cdblib.renderer_for(false, false,
+      cdblib.mk_default_render_template())
     function log_new_hash(h, p)
       return logf:write(rend(h, p))
     end
