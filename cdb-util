@@ -69,6 +69,28 @@ mksubcmd(function(c)
 )
 
 ----------------------------------------------------------------- }}}
+------------------------------ Command: digest-filter-exists dfex {{{
+
+mksubcmd(function(c)
+  c:name("digest-filter-exists dfex")
+   :description("Filter a stream of digest records to existing files")
+  argparse_flag_nul(c)
+  argparse_flag_inul(c)
+ end,
+ function(args)
+
+  local rend = cdblib.renderer_for(args.nul, false,
+                 cdblib.mk_default_render_template())
+  local iter = cdblib.iter_gnu_digest_stderr(
+                 cdblib.iter_lines_or_nul(args.inul))
+
+  for h, p in iter() do
+    if plpath.exists(p) then io.write(rend(h,p)) end
+  end
+ end
+)
+
+----------------------------------------------------------------- }}}
 --------------------------------- Command: digest-relativize drel {{{
 
 mksubcmd(function(c)
