@@ -190,7 +190,8 @@ local argp = argparse("cdb", "checksum database tool")
 argp:option("--db --database")
   :target("database")
   :args(1)
-  :description("Indicate primary checksum database")
+  :default(os.getenv("CDB"))
+  :description("Indicate primary checksum database (or use $CDB)")
 
 -- grouping logic, part 1.  Sadly, this needs to run "all at once" but we want
 -- to define our commands incrementally!
