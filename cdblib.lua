@@ -151,54 +151,15 @@ function _M.iter_table(t)
 end
 
 ----------------------------------------------------------------- }}}
---------------------------------------------- Generator utilities {{{
-
--- lazily generate and cache escaped version
-local function _renderer_for_esc(t,k)
-    local nesc
-    t.f, nesc = escape_gnu_digest(t.u)
-    t.e = nesc == 0 and "" or "\\"
-    return t[k]
-  end
-
--- Generate a renderer for a choice of common parameters.  In the resulting
--- template expansion,
---
---   $e expands to "\\" (resp. "") if the path was (resp. was not) escaped
---   $f expands to the optionally escaped file name (see $e)
---   $h expands to the hash
---   $u expands to the unescaped file name
---   $z expands to the appropriate record separator ("\n" or "\0")
---
-function _M.renderer_for(nul, unescape, template)
-  local v = { z = nul and "\0" or "\n"
-            , f = unescape and function(t) return t.u end or _renderer_for_esc
-            , e = unescape and "" or _renderer_for_esc
-            }
-  local mt = { __index =
-    function(t,k)
-      local x = v[k]
-      return type(x) == "function" and x(t,k) or x
-    end
-  }
-  return function(hash, path)
-    return template:substitute(setmetatable({h = hash, u = path}, mt))
-  end
-end
-
-function _M.mk_default_render_template()
-  return (require "pl.text").Template("$e$h  $f$z")
-end
-
------------------------------------------------------------------ }}}
 ------------------------------------------- Path escape utilities {{{
 
 -- This appears to be pretty safe, even in the presence of non-ASCII bytes.
 -- That's kind of great and we will use this by default whenever we generate
 -- text for a shell.
-function _M.posix_shell_escape(str)
+local function posix_shell_escape(str)
   return "'" .. str:gsub("'", "'\"'\"'") .. "'"
 end
+_M.posix_shell_escape = posix_shell_escape
 
 -- While POSIX shells understand control characters inside single quotes, they
 -- are unfriendly to read as such.  Some shells have a $'...' escape that can
@@ -238,6 +199,48 @@ function _M.mk_human_shell_escape(rexlib)
     -- If none of the special cases apply, be overzealous but hopefully safe
     return extended_shell_escape(str)
   end
+end
+
+----------------------------------------------------------------- }}}
+--------------------------------------------- Generator utilities {{{
+
+-- lazily generate and cache escaped version
+local function _renderer_for_esc(t,k)
+  local nesc
+  t.f, nesc = escape_gnu_digest(t.u)
+  t.e = nesc == 0 and "" or "\\"
+  return t[k]
+end
+
+-- Generate a renderer for a choice of common parameters.  In the resulting
+-- template expansion,
+--
+--   $e expands to "\\" (resp. "") if the path was (resp. was not) GNU escaped
+--   $f expands to the optionally GNU escaped file name (see $e)
+--   $h expands to the hash
+--   $P expands to the POSIX-shell-escaped file name
+--   $u expands to the unescaped file name
+--   $z expands to the appropriate record separator ("\n" or "\0")
+--
+function _M.renderer_for(nul, unescape, template)
+  local v = { z = nul and "\0" or "\n"
+            , f = unescape and function(t) return t.u end or _renderer_for_esc
+            , e = unescape and "" or _renderer_for_esc
+            , P = function(t) return posix_shell_escape(t.u) end
+            }
+  local mt = { __index =
+    function(t,k)
+      local x = v[k]
+      return type(x) == "function" and x(t,k) or x
+    end
+  }
+  return function(hash, path)
+    return template:substitute(setmetatable({h = hash, u = path}, mt))
+  end
+end
+
+function _M.mk_default_render_template()
+  return (require "pl.text").Template("$e$h  $f$z")
 end
 
 ----------------------------------------------------------------- }}}
