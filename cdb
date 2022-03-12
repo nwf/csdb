@@ -378,8 +378,10 @@ mksubcmd(function(c)
          hash   TEXT NOT NULL UNIQUE ON CONFLICT FAIL)]])
   ddo([[CREATE TABLE IF NOT EXISTS hash_hash_superseders (
          supersederid INTEGER PRIMARY KEY ASC,
-         oldid INTEGER REFERENCES hashes(hashid),
-         newid INTEGER REFERENCES hashes(hashid),
+         oldid INTEGER REFERENCES hashes(hashid)
+           ON UPDATE CASCADE ON DELETE RESTRICT,
+         newid INTEGER REFERENCES hashes(hashid)
+           ON UPDATE CASCADE ON DELETE RESTRICT,
          timestamp INTEGER DEFAULT CURRENT_TIMESTAMP,
          note TEXT,
          UNIQUE(oldid, newid) ON CONFLICT FAIL)]])
@@ -388,8 +390,10 @@ mksubcmd(function(c)
   -- TODO: can we make path_hash a WITHOUT ROWID table?
   ddo([[CREATE TABLE IF NOT EXISTS path_hash (
          pairid INTEGER PRIMARY KEY ASC,
-         pathid INTEGER REFERENCES paths(pathid),
-         hashid INTEGER REFERENCES hashes(hashid),
+         pathid INTEGER REFERENCES paths(pathid)
+           ON UPDATE CASCADE ON DELETE RESTRICT,
+         hashid INTEGER REFERENCES hashes(hashid)
+           ON UPDATE CASCADE ON DELETE RESTRICT,
          timestamp INTEGER DEFAULT CURRENT_TIMESTAMP,
          UNIQUE(pathid, hashid) ON CONFLICT FAIL)]])
   ddo([[CREATE INDEX IF NOT EXISTS path_hash_idx_pathid
@@ -1141,6 +1145,8 @@ local dbh, err = dbi.Connect("SQLite3", args.database)
 if not dbh then
   error ("Database error: " .. err)
 end
+
+sql_do(dbh, "PRAGMA foreign_keys = ON;")
 
 args:_command_fn(dbh)
 
