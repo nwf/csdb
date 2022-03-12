@@ -143,15 +143,16 @@ local function argparse_flag_nul(c)
 end
 
 local function argparse_for_render(c)
-  c:flag("--unescape")
-   :description("Do not escape filenames ($f is $u); likely use --nul, too")
-   :default(false)
-  c:flag("--nul -0")
-   :description("NUL-terminate records ($z is NUL rather than newline)")
-   :default(false)
-  c:option("--format")
+  local f = c:option("--format")
    :description("Output format specifier")
    :default("$e$h  $f$z")
+  local n = c:flag("--nul -0")
+   :description("NUL-terminate records ($z is NUL rather than newline)")
+   :default(false)
+  local u = c:flag("--unescape")
+   :description("Do not escape filenames ($f is $u); likely use --nul, too")
+   :default(false)
+  return f, n, u
 end
 
 local function renderer_for(args)
