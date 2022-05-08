@@ -1139,7 +1139,9 @@ for k,v in pairs(argp_groups) do argp:group(k, table.unpack(v)) end
 local args = argp:parse()
 -- io.stderr:write((require "pl.pretty").write(args), "\n")
 
-if not args.database then argp:error("Database is required") end
+if not args.database then
+  argp:error("Database is required; pass --db or set CDB env var")
+end
 
 local dbh, err = dbi.Connect("SQLite3", args.database)
 if not dbh then

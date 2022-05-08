@@ -102,7 +102,7 @@ We can generate the list of files we don't know about using ``find`` and
 ``cdb filterpath``::
 
    find ${DIR} -type f -print0 | \
-     cdb --db ${DB} filterpath --inul --format '$u$z' --nul > ${DB}.new-files0
+     cdb filterpath -1 -P -p out -0 -f '$u$z' > ${DB}.new-files0
 
 .. _xargs_sha:
 
@@ -127,7 +127,7 @@ file system as follows::
 This database may not seem very useful, but when combined with ``cdb --db diff`` we
 can quickly find all paths whose checksums are unknown to the database::
 
-   cdb --db ${DB} diff ${JPDB} --flavor=path --which=super --format '$u$z' --nul > ${DB}.new-files0
+   cdb diff ${JPDB} --no-headers --flavor=path --which=super --format '$u$z' -0 > ${DB}.new-files0
 
 And then proceed as `above <xargs_sha>`_.
 
@@ -147,9 +147,9 @@ Armed with a "just paths" database as per the above, we can then direct the
 database to prune tracked paths not in the "just paths" database if the hashes
 are observed elsewhere::
 
-   cdb --db ${DB} diff ${JPDB} --flavor=path --which=sub --no-headers --format '$u$z' --nul > ${JPDB}.missing-files0
-   cdb --db ${DB} domv --inul < ${JPDB}.missing-files0
-   cdb --db ${DB} gc > ${DB}.gc
+   cdb diff ${JPDB} --flavor=path --which=sub --no-headers --format '$u$z' --nul > ${JPDB}.missing-files0
+   cdb domv --inul < ${JPDB}.missing-files0
+   cdb gc > ${DB}.gc
    sqlite3 ${DB} < ${DB}.gc
 
 .. TODO or if the observed digest is now superseded?
@@ -242,7 +242,7 @@ presence elsewhere in the database.  We can enumerate files not tracked using
 above::
 
    find ${DIR} -type f -print0 | \
-   cdb --db ${DB} filterpath --in-path --predicate=out -0 -1 --format '$u$z' | \
+   cdb filterpath --in-path --predicate=out -0 -1 --format '$u$z' | \
    xargs -0 sha512sum > ${DB}.new
 
 We can then prepare to prune duplicates and add unique files::
