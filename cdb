@@ -305,7 +305,7 @@ mksubcmd(function(c)
   local sth_superseder_by_hash = assert(sql_mk_superseder_find_by_hash(dbh))
 
   local path_crush =
-    args.relative and function(p) plpath.relpath(p, args.relative) end
+    args.relative and function(p) return plpath.relpath(p, args.relative) end
                   or plpath.basename
 
   local function explain_found_hash(h, p)
