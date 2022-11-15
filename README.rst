@@ -58,8 +58,9 @@ Or, for all files under a path::
    find $DIR -type f -exec sha512sum {} \+ | cdb addh
 
 If we have a pile of digest files already, each of which contains digests of
-paths relative to its location, we can generate a database, ``${DB2}`` from them
-with the assistance of the ``cdb-util digest-relativize`` tool::
+paths relative to its location, we can generate a database, ``${DB2}`` from
+them with the assistance of the ``cdb-util digest-relativize`` tool (see
+:ref:`below <cdb-util_drel>`)::
 
   find ${DIR} -type f -name SHA512SUMS -print0 | cdb-util drel -1 | cdb addh
 
@@ -261,3 +262,75 @@ Inspect the pruning commands to be run, and then execute them with::
 ``--prune-log`` rather than ``--prune``.  The resulting, ``NUL``-terminated list
 of files can be inspected with ``cdb-util escape human -0`` and run with ``xargs
 -0 -- rm --``.)
+Other Included Utilities
+########################
+
+The ``cdb-util`` program contains utilities for manipulating digest streams and
+may grow to include other tools not directly relevant to manipulating ``cdb``
+databases.
+
+Digest Stream Utilities
+=======================
+
+digest-prefix
+-------------
+
+AKA ``dpre``, this command filters a digest stream by adding a prefix to
+relative paths within.  For example, while ::
+
+   sha512sum *
+
+generates a stream that uses relative names, both of these forms should produce
+absolute names::
+
+   sha512sum $PWD/*
+   sha512sum * | cdb-util dpre --prefix $PWD
+
+digest-filter-exists
+--------------------
+
+AKA ``dfex``, this command filters a digest stream, limiting it to files that
+exist.  This may be useful if one is ingesting files in stages.
+
+.. _cdb-util_drel:
+
+digest-relativize
+-----------------
+
+AKA ``drel``, this command is a "recursive ``digest-prefix``": given a stream
+of names of digest stream files on ``stdin``, this utility opens each and
+prefixes the paths therein by the path naming the stream.  The various streams
+involved can be made ``NUL``-terminated rather than newline terminated (with
+escapes) with:
+
+* The usual ``--nul`` (``-0``) continues to affect the *output* stream
+  (``stdout``),
+
+* The usual ``--inul`` (``-1``) continues to affect the *input* stream *of
+  digest file names* (``stdin``),
+
+* The new ``--fnul`` (``-2``) indicates that the digest files read internally
+  are ``NUL``-terminated records.
+
+escape
+------
+
+AKA ``esc``, this command maps input records in various ways to make them safe
+for consumption by shells or similar.  This tool is largely a test hook, but is
+exposed in case it is useful.  The ``--how`` parameter dictates the transform
+in question:
+
+* ``posix`` escapes strings such that they will be correctly inpterpreted by
+  POSIX shells, using single-quotes whenever possible (except when escaping
+  single quotes, which get escaped with double quotes).  This transform will
+  leave non-printing characters in place, including newlines!
+
+* ``extended`` escapes strings using ``$'\xHH'`` notation, understood by many
+  \*NIX shells.  Non-printing and non-ASCII *bytes* are escaped, which can make
+  this somewhat more invasive than might be desired.
+
+* ``human`` tries to escape strings using a somewhat messy, but Unicode-aware
+  policy, preserving non-ASCII graphemes where possible, especially when names
+  don't include shell metacharacters.
+
+* ``digest`` performs a GNU coreutils digest stream escaping.
