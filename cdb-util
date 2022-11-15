@@ -98,7 +98,7 @@ mksubcmd(function(c)
    :description("Relativize and concatenate many digest streams")
   argparse_flag_nul(c)
   argparse_flag_inul(c)
-  argp:flag("--fnul -2")
+  c:flag("--fnul -2")
     :description("Input files are NUL terminated rather than newline")
     :default(false)
  end,
