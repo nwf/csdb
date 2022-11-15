@@ -120,7 +120,7 @@ mksubcmd(function(c)
    :description("Escape input records, usually for shells")
   c:argument("how"):default("posix")
    :description("How to escape lines")
-   -- TODO: :choices("digest", "posix", "extended", "human")
+   :choices({ "digest", "posix", "extended", "human" })
   argparse_flag_nul(c)
   argparse_flag_inul(c)
  end,
