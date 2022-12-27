@@ -671,6 +671,45 @@ mksubcmd(function(c)
  end)
 
 ----------------------------------------------------------------- }}}
+--------------------------------------- Command: duplicates dupes {{{
+
+mksubcmd(function(c)
+  c:name("duplicates dupes")
+   :description("List hashes with multiple associated files")
+  c:option("--glob"):default("*")
+  c:flag("--verbose")
+   :description("Be chatty on stderr about the generated comand stream")
+  local f = argparse_for_render(c)
+  f:default("$u$z")
+  argp_group("Query", c)
+ end,
+ function(args, dbh)
+  local render = renderer_for(args)
+
+  local sth = assert(sql_do(dbh,
+    [[SELECT hash, path, pairid, timestamp FROM v_path_hash NATURAL JOIN
+       (SELECT hashid, hcount FROM
+        (SELECT hashid, COUNT(pairid) AS hcount FROM path_hash GROUP BY hashid)
+        WHERE hcount > 1)
+       NATURAL JOIN (SELECT hashid FROM v_path_hash WHERE path NOT GLOB ?1)
+       WHERE path GLOB ?1 ORDER BY hashid]], args.glob))
+  local lasthash = nil
+  for row in sth:rows() do
+    local h, p, pairid, ts = table.unpack(row)
+    if h ~= lasthash then
+      lasthash = h
+      if args.verbose then io.stderr:write(("HASH %s\n"):format(h)) end
+    end
+    if args.verbose then
+      -- TODO: this is probably not the right thing to print
+      io.stderr:write((" observed path %s with id %d at %s\n")
+            :format(cdblib.posix_shell_escape(p), pairid, ts))
+    end
+    io.write(render("-", p))
+  end
+ end)
+
+----------------------------------------------------------------- }}}
 ---------------------------------------- Command: filterhash filh {{{
 
 mksubcmd(function(c)
