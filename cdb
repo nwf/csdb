@@ -52,7 +52,7 @@ local function sql_mk_pathid_find(dbh)
   return dbh:prepare([[SELECT pathid FROM paths WHERE path = ?]])
 end
 
-local function sql_mk_pathid_find_by_hash(dbh)
+local function sql_mk_path_find_by_hash(dbh)
   return dbh:prepare([[SELECT path
       FROM path_hash NATURAL JOIN paths NATURAL JOIN hashes WHERE hash = ?]])
 end
@@ -303,7 +303,7 @@ mksubcmd(function(c)
   local mkiter = cdblib.iter_gnu_digest_stderr(
     cdblib.iter_lines_or_nul(args.inul))
   local sth_hash_find = assert(sql_mk_hashid_find(dbh))
-  local sth_path_by_hash = assert(sql_mk_pathid_find_by_hash(dbh))
+  local sth_path_by_hash = assert(sql_mk_path_find_by_hash(dbh))
   local sth_superseder_by_hash = assert(sql_mk_superseder_find_by_hash(dbh))
 
   local path_crush =
@@ -486,7 +486,7 @@ mksubcmd(function(c)
 
    local print_row
    if args.verbose then
-     local sth_path_find_by_hash = assert(sql_mk_pathid_find_by_hash(dbh))
+     local sth_path_find_by_hash = assert(sql_mk_path_find_by_hash(dbh))
      local function print_paths(hash)
        sth_path_find_by_hash:execute(hash)
        for prow in sth_path_find_by_hash:rows() do
@@ -529,7 +529,7 @@ mksubcmd(function(c)
   argp_group("Administrative", c)
  end,
  function(_, dbh)
-   local sth_path_find_by_hash = assert(sql_mk_pathid_find_by_hash(dbh))
+   local sth_path_find_by_hash = assert(sql_mk_path_find_by_hash(dbh))
    local sth_superseder_by_hash =
      assert(sql_mk_superseder_find_hash_by_hash(dbh))
 
@@ -631,7 +631,7 @@ mksubcmd(function(c)
   argp_group("Query", c)
  end,
  function(args, dbh)
-  local sth = assert(sql_mk_pathid_find_by_hash(dbh))
+  local sth = assert(sql_mk_path_find_by_hash(dbh))
   local render = renderer_for(args)
   local mkiter =
     #args.hash ~= 0 and cdblib.iter_table(args.hash)
@@ -733,7 +733,7 @@ mksubcmd(function(c)
  end,
  function(args, dbh)
   local sth_path_find = assert(sql_mk_pathid_find(dbh))
-  local sth_path_find_by_hash = assert(sql_mk_pathid_find_by_hash(dbh))
+  local sth_path_find_by_hash = assert(sql_mk_path_find_by_hash(dbh))
   local sth_obsv_find_by_pathid_hash =
     assert(dbh:prepare([[SELECT pairid
       FROM path_hash NATURAL JOIN hashes WHERE pathid = ? AND hash = ?]]))
