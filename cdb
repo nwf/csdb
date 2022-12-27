@@ -945,7 +945,7 @@ mksubcmd(function(c)
 
 mksubcmd(function(c)
   c:name("addhash addh")
-   :description("Ingest digest tool output")
+   :description("Add digests from tool output")
   argparse_opt_graft(c)
   argparse_flag_inul(c)
   argparse_flag_progress(c)
@@ -953,6 +953,8 @@ mksubcmd(function(c)
    :description("Remove all existing observations of reported paths")
   c:flag("--keep-timestamps")
    :description("Do not update the observation timestamp fields")
+  c:flag("--one-commit")
+   :description("Do not commit per processed record, just at the end")
   argp_group("Update", c)
  end,
  function(args, dbh)
@@ -970,8 +972,8 @@ mksubcmd(function(c)
 
   local progeach, progfin = mk_progress_pair(args.progress)
 
+  local docommit = false
   for h, p in cdblib.iter_gnu_digest_stderr(mkiter)() do
-    local docommit = false
     p = plpath.normpath(plpath.join(args.graft, p))
     local pid = sql_run_one_x(sth_path_upsert, p)[1]
     assert (pid ~= nil)
@@ -988,10 +990,14 @@ mksubcmd(function(c)
       assert(sth_obsv_upd_ts:affected() == 1)
       docommit = true
     end
-    if docommit then dbh:commit() end
+    if not args.one_commit and docommit then
+      docommit = false
+      dbh:commit()
+    end
 
     progeach()
   end
+  if docommit then dbh:commit() end
   progfin()
  end)
 
